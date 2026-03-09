@@ -1,0 +1,1288 @@
+#include <Arduino.h>
+#include <Preferences.h>
+
+// ===================== PINS =====================
+static const int PIN_RPWM = 25;
+static const int PIN_LPWM = 26;
+static const int PIN_REN = 27;
+static const int PIN_LEN = 14;
+
+// ⚠️ NE PAS MODIFIER (comme demandé)
+static const int PIN_SW_BACK = 33;
+static const int PIN_SW_FRONT = 32;
+
+// Arret d'urgence (bouton NC = normalement ferme)
+static const int PIN_ESTOP = 13;
+bool estopTriggered = false;
+
+void dbgByte(char c) {
+  Serial.print("[UART_RX] ");
+  if (c == '\n') Serial.println("\\n");
+  else if (c == '\r') Serial.println("\\r");
+  else Serial.println(c);
+}
+
+// UART vers Raspberry Pi
+static const int UART_RX = 19;
+static const int UART_TX = 18;
+
+// Slider (potentiomètre linéaire) — Blanc = signal
+static const int PIN_ADC = 34;  // GPIO34 (ADC1)
+
+// ===================== PWM =====================
+static const int PWM_FREQ = 20000;
+static const int PWM_RES = 8;
+
+// ===================== HELPERS =====================
+static inline float clampf(float x, float a, float b) {
+  if (x < a) return a;
+  if (x > b) return b;
+  return x;
+}
+static inline int iClamp(int v, int lo, int hi) {
+  if (v < lo) return lo;
+  if (v > hi) return hi;
+  return v;
+}
+static inline int iMax(int a, int b) {
+  return (a > b) ? a : b;
+}
+
+// ===================== POSITION (SLIDER ADC) =====================
+// Anti-bug extrêmes ADC
+static const int ADC_MIN = 10;
+static const int ADC_MAX = 4085;
+
+// Moyenne sur ADC_AVG_N lectures (anti bruit)
+static const int ADC_AVG_N = 16;
+
+// Filtre position (moyenne glissante)
+static const int POS_N = 4;
+int posBuf[POS_N] = { 0 };
+int posIdx = 0;
+bool posFilled = false;
+
+static inline int readAdcClampedAvg() {
+  long sum = 0;
+  for (int i = 0; i < ADC_AVG_N; i++) {
+    sum += analogRead(PIN_ADC);
+    delayMicroseconds(150);
+  }
+  int v = (int)(sum / ADC_AVG_N);
+  if (v < ADC_MIN) v = ADC_MIN;
+  if (v > ADC_MAX) v = ADC_MAX;
+  return v;
+}
+
+int readPosRaw() {
+  // Renvoie une "position" en unités ADC (0..4095, clampée)
+  return readAdcClampedAvg();
+}
+
+int readPosFiltered() {
+  int p = readPosRaw();
+  if (p < 0) return -1;
+
+  posBuf[posIdx] = p;
+  posIdx = (posIdx + 1) % POS_N;
+  if (posIdx == 0) posFilled = true;
+
+  int count = posFilled ? POS_N : posIdx;
+  long sum = 0;
+  for (int i = 0; i < count; i++) sum += posBuf[i];
+  return (int)(sum / count);
+}
+
+// ===================== STATE =====================
+bool dbg = true;
+bool dbgCop = false;
+
+bool armed = false;
+bool homed = false;
+bool autoMode = false;
+
+bool invertDir = false;
+bool copInvert = true;
+
+int homingPwm = 90;
+int centerPwm = 60;
+
+// Release robuste
+int releasePwm = 90;
+uint32_t releaseToMs = 1500;
+
+// Mode vitesse (COP->PWM)
+int vPwmMax = 220;
+int vPwmMin = 20;
+float copClamp = 0.40f;
+float copDead = 0.001f;
+
+// Minimum réel de mouvement
+int pwmMinMove = 30;  // force |cmd| >= pwmMinMove si cmd != 0
+
+// Kick de démarrage
+int kickPwm = 140;
+int kickMs = 50;
+uint32_t kickUntilMs = 0;
+
+// Kick seulement après un vrai arrêt
+uint32_t zeroStartMs = 0;
+uint32_t kickMinStopMs = 150;  // 150..400 ms typiquement
+
+// Watchdog COP
+uint32_t copWatchdogMs = 300;
+uint32_t lastCopMs = 0;
+
+// Safe range + slow-zone
+// ⚠️ Ces valeurs sont désormais en "unités ADC" (pas mm), on garde les noms pour éviter refactor
+int endMarginMm = 80;  // marge autour des butées (ADC)
+int posMinSafe = -1;
+int posMaxSafe = -1;
+
+int slowZoneMm = 120;  // zone de ralentissement proche des butées (ADC)
+int slowPwmMax = 70;
+
+int hardStopMm = 25;  // stop très proche des butées (ADC)
+
+uint32_t blockTowardFrontUntilMs = 0;
+uint32_t blockTowardBackUntilMs = 0;
+uint32_t switchCooldownMs = 500;
+
+// Calibration (unités ADC)
+int posMm = -1;
+int posMinMm = -1;
+int posMaxMm = -1;
+int centerMm = -1;
+bool frontIsMin = true;
+
+// COP
+float copY = 0.0f;
+
+// Mode position (COP -> intégration posRef -> PID)
+bool posMode = true;
+float posRef = 0.0f;
+uint32_t lastPosCtrlMs = 0;
+
+float speedGain  = 2500.0f;
+float Kp         = 0.28f;
+float Kd         = 0.0f;
+int   pwmMaxPos  = 180;
+float lastPosMm  = 0.0f;
+float velFilt    = 0.0f;
+
+// Ramp
+int cmdNow = 0;
+int slewPerStep = 60;
+
+// NVS
+Preferences prefs;
+static const char* NVS_NS = "plateau";
+static const uint32_t CAL_MAGIC = 0xC0A1BEEF;
+
+// ===================== MOTOR =====================
+void motorStop() {
+  ledcWrite(PIN_RPWM, 0);
+  ledcWrite(PIN_LPWM, 0);
+  digitalWrite(PIN_REN, LOW);
+  digitalWrite(PIN_LEN, LOW);
+}
+
+void motorSetSigned(int pwmSigned) {
+  if (invertDir) pwmSigned = -pwmSigned;
+
+  int pwm = abs(pwmSigned);
+  if (pwm <= 0) {
+    motorStop();
+    return;
+  }
+  if (pwm > 255) pwm = 255;
+
+  digitalWrite(PIN_REN, HIGH);
+  digitalWrite(PIN_LEN, HIGH);
+
+  if (pwmSigned > 0) {  // FRONT
+    ledcWrite(PIN_RPWM, 0);
+    ledcWrite(PIN_LPWM, pwm);
+  } else {  // BACK
+    ledcWrite(PIN_LPWM, 0);
+    ledcWrite(PIN_RPWM, pwm);
+  }
+}
+
+void motorTowardFront(int pwm) {
+  motorSetSigned(+pwm);
+}
+void motorTowardBack(int pwm) {
+  motorSetSigned(-pwm);
+}
+
+// ===================== ARRET D'URGENCE =====================
+bool estopActive() {
+  // Bouton NC: circuit ferme au repos = LOW, ouvert (urgence) = HIGH
+  return digitalRead(PIN_ESTOP) == HIGH;
+}
+
+void estopCheck() {
+  if (!estopActive()) {
+    if (estopTriggered) {
+      estopTriggered = false;
+      Serial.println("[ESTOP] Released - you can re-ARM");
+    }
+    return;
+  }
+  // Urgence active
+  if (!estopTriggered) {
+    estopTriggered = true;
+    Serial.println("[ESTOP] EMERGENCY STOP!");
+  }
+  motorStop();
+  armed = false;
+  autoMode = false;
+  homed = false;
+  cmdNow = 0;
+  kickUntilMs = 0;
+  zeroStartMs = millis();
+}
+
+// ===================== SWITCH DEBOUNCE =====================
+uint32_t swF_lastChange = 0, swB_lastChange = 0;
+int swF_stable = 0, swB_stable = 0;
+int swF_rawPrev = 0, swB_rawPrev = 0;
+static const uint32_t SW_STABLE_MS = 20;
+
+void updateSwitchDebounce() {
+  int rf = digitalRead(PIN_SW_FRONT);
+  int rb = digitalRead(PIN_SW_BACK);
+  uint32_t now = millis();
+
+  if (rf != swF_rawPrev) {
+    swF_rawPrev = rf;
+    swF_lastChange = now;
+  }
+  if (rb != swB_rawPrev) {
+    swB_rawPrev = rb;
+    swB_lastChange = now;
+  }
+
+  if (now - swF_lastChange >= SW_STABLE_MS) swF_stable = swF_rawPrev;
+  if (now - swB_lastChange >= SW_STABLE_MS) swB_stable = swB_rawPrev;
+}
+
+void resetSwitchDebounce() {
+  int rawF = digitalRead(PIN_SW_FRONT);
+  int rawB = digitalRead(PIN_SW_BACK);
+
+  swF_rawPrev = rawF;
+  swB_rawPrev = rawB;
+  swF_stable = rawF;
+  swB_stable = rawB;
+  // Met lastChange dans le passé pour que la prochaine lecture soit considérée stable
+  swF_lastChange = millis() - SW_STABLE_MS - 10;
+  swB_lastChange = millis() - SW_STABLE_MS - 10;
+}
+
+inline bool swFrontPressed() {
+  return swF_stable == HIGH;
+}
+inline bool swBackPressed() {
+  return swB_stable == HIGH;
+}
+
+// ===================== SAFE RANGE =====================
+void computeSafeRange() {
+  if (posMinMm < 0 || posMaxMm < 0) {
+    posMinSafe = posMaxSafe = -1;
+    return;
+  }
+  posMinSafe = posMinMm + endMarginMm;
+  posMaxSafe = posMaxMm - endMarginMm;
+  if (posMinSafe > posMaxSafe) {
+    posMinSafe = posMinMm;
+    posMaxSafe = posMaxMm;
+  }
+
+  Serial.print("SAFE_RANGE minSafe=");
+  Serial.print(posMinSafe);
+  Serial.print(" maxSafe=");
+  Serial.println(posMaxSafe);
+}
+
+// ===================== NVS save/load =====================
+void saveCalibration() {
+  prefs.begin(NVS_NS, false);
+  prefs.putUInt("magic", CAL_MAGIC);
+  prefs.putInt("min", posMinMm);
+  prefs.putInt("max", posMaxMm);
+  prefs.putInt("center", centerMm);
+  prefs.putInt("minS", posMinSafe);
+  prefs.putInt("maxS", posMaxSafe);
+  prefs.putBool("fim", frontIsMin);
+  prefs.putInt("margin", endMarginMm);
+  prefs.putBool("inv", invertDir);
+  prefs.putBool("copinv", copInvert);
+  prefs.putInt("slowZ", slowZoneMm);
+  prefs.putInt("slowP", slowPwmMax);
+  prefs.putInt("relp", releasePwm);
+  prefs.putUInt("relt", releaseToMs);
+  prefs.putInt("hstp", hardStopMm);
+  prefs.putInt("pminm", pwmMinMove);
+  prefs.putInt("kpwm", kickPwm);
+  prefs.putInt("kms", kickMs);
+  prefs.end();
+  Serial.println("CAL: saved");
+}
+
+bool loadCalibration() {
+  prefs.begin(NVS_NS, true);
+  uint32_t m = prefs.getUInt("magic", 0);
+  if (m != CAL_MAGIC) {
+    prefs.end();
+    return false;
+  }
+
+  posMinMm = prefs.getInt("min", -1);
+  posMaxMm = prefs.getInt("max", -1);
+  centerMm = prefs.getInt("center", -1);
+  posMinSafe = prefs.getInt("minS", -1);
+  posMaxSafe = prefs.getInt("maxS", -1);
+  frontIsMin = prefs.getBool("fim", true);
+  endMarginMm = prefs.getInt("margin", endMarginMm);
+  invertDir = prefs.getBool("inv", invertDir);
+  copInvert = prefs.getBool("copinv", copInvert);
+  slowZoneMm = prefs.getInt("slowZ", slowZoneMm);
+  slowPwmMax = prefs.getInt("slowP", slowPwmMax);
+  releasePwm = prefs.getInt("relp", releasePwm);
+  releaseToMs = prefs.getUInt("relt", releaseToMs);
+  hardStopMm = prefs.getInt("hstp", hardStopMm);
+  pwmMinMove = prefs.getInt("pminm", pwmMinMove);
+  kickPwm = prefs.getInt("kpwm", kickPwm);
+  kickMs = prefs.getInt("kms", kickMs);
+  prefs.end();
+
+  if (posMinMm < 0 || posMaxMm < 0) return false;
+  if (centerMm < 0) centerMm = (posMinMm + posMaxMm) / 2;
+  if (posMinSafe < 0 || posMaxSafe < 0) computeSafeRange();
+
+  homed = true;
+  Serial.println("CAL: loaded (homed=1)");
+  return true;
+}
+
+void clearCalibration() {
+  prefs.begin(NVS_NS, false);
+  prefs.clear();
+  prefs.end();
+  Serial.println("CAL: cleared");
+  homed = false;
+}
+
+// ===================== RELEASE =====================
+bool waitReleasedStable(bool (*pressedFn)(), uint32_t stableMs, uint32_t timeoutMs) {
+  uint32_t t0 = millis();
+  uint32_t stableStart = 0;
+  while (millis() - t0 < timeoutMs) {
+    updateSwitchDebounce();
+    if (!pressedFn()) {
+      if (stableStart == 0) stableStart = millis();
+      if (millis() - stableStart >= stableMs) return true;
+    } else {
+      stableStart = 0;
+    }
+    delay(2);
+  }
+  return false;
+}
+
+bool releaseFrontHard() {
+  updateSwitchDebounce();
+  if (!swFrontPressed()) return true;
+
+  Serial.println("REL: FRONT pressed -> backing off...");
+
+  // 1) tentative "normale" : s'éloigner du front = aller vers BACK
+  uint32_t t0 = millis();
+  while (swFrontPressed() && (millis() - t0 < releaseToMs)) {
+    motorTowardFront(releasePwm);
+    delay(6);
+    updateSwitchDebounce();
+  }
+  motorStop();
+  delay(120);
+
+  // Vérif stable
+  if (waitReleasedStable(swFrontPressed, 25, 700)) {
+    Serial.println("REL OK: FRONT released");
+    return true;
+  }
+
+  // 2) fallback : si ça n'a pas marché, on essaye l'autre sens
+  Serial.println("REL WARN: FRONT still pressed -> trying opposite direction...");
+  t0 = millis();
+  while (swFrontPressed() && (millis() - t0 < releaseToMs)) {
+    motorTowardBack(releasePwm);  // sens opposé
+    delay(6);
+    updateSwitchDebounce();
+  }
+  motorStop();
+  delay(120);
+
+  bool ok = waitReleasedStable(swFrontPressed, 25, 700);
+  if (!ok) {
+    Serial.println("REL ERROR: FRONT still pressed");
+    return false;
+  }
+  Serial.println("REL OK: FRONT released (opposite dir)");
+  return true;
+}
+
+bool releaseBackHard() {
+  updateSwitchDebounce();
+  if (!swBackPressed()) return true;
+
+  Serial.println("REL: BACK pressed -> moving off...");
+
+  // 1) tentative "normale" : s'éloigner du back = aller vers FRONT
+  uint32_t t0 = millis();
+  while (swBackPressed() && (millis() - t0 < releaseToMs)) {
+    motorTowardBack(releasePwm);
+    delay(6);
+    updateSwitchDebounce();
+  }
+  motorStop();
+  delay(120);
+
+  if (waitReleasedStable(swBackPressed, 25, 700)) {
+    Serial.println("REL OK: BACK released");
+    return true;
+  }
+
+  // 2) fallback : autre sens
+  Serial.println("REL WARN: BACK still pressed -> trying opposite direction...");
+  t0 = millis();
+  while (swBackPressed() && (millis() - t0 < releaseToMs)) {
+    motorTowardFront(releasePwm);
+    delay(6);
+    updateSwitchDebounce();
+  }
+  motorStop();
+  delay(120);
+
+  bool ok = waitReleasedStable(swBackPressed, 25, 700);
+  if (!ok) {
+    Serial.println("REL ERROR: BACK still pressed");
+    return false;
+  }
+  Serial.println("REL OK: BACK released (opposite dir)");
+  return true;
+}
+
+
+bool releaseAny() {
+  bool okF = releaseFrontHard();
+  bool okB = releaseBackHard();
+  return okF && okB;
+}
+
+
+
+// ===================== CENTERING =====================
+bool wantTowardFront_fromTargetPos(int target, int pos) {
+  return frontIsMin ? (target < pos) : (target > pos);
+}
+
+bool goToTargetBlocking(int tgtMm, uint32_t timeoutMs) {
+  if (!armed || !homed) return false;
+  Serial.print("CENTER: target=");
+  Serial.println(tgtMm);
+
+  uint32_t t0 = millis();
+  while (millis() - t0 < timeoutMs) {
+    updateSwitchDebounce();
+    if (swFrontPressed() || swBackPressed()) {
+      if (!releaseAny()) return false;
+      delay(100);
+    }
+
+    int p = readPosFiltered();
+    if (p < 0) {
+      motorStop();
+      return false;
+    }
+    posMm = p;
+
+    int err = tgtMm - posMm;
+    if (abs(err) < 25) {  // tolérance plus large en ADC
+      motorStop();
+      Serial.println("CENTER: reached");
+      return true;
+    }
+
+    bool wantFront = wantTowardFront_fromTargetPos(tgtMm, posMm);
+    if (wantFront) motorTowardBack(centerPwm);
+    else motorTowardFront(centerPwm);
+
+    delay(10);
+  }
+  motorStop();
+  Serial.println("CENTER: timeout");
+  return false;
+}
+
+// ===================== HOMING =====================
+bool doHoming() {
+  Serial.println("=== HOMING START ===");
+  if (!armed) {
+    Serial.println("Homing ERROR: not armed");
+    return false;
+  }
+
+  autoMode = false;
+  homed = false;
+  cmdNow = 0;
+  kickUntilMs = 0;
+  zeroStartMs = millis();
+
+  resetSwitchDebounce();
+
+  Serial.print("DEBUG init: rawF=");
+  Serial.print(digitalRead(PIN_SW_FRONT));
+  Serial.print(" swF_stable=");
+  Serial.print(swF_stable);
+  Serial.print(" swFrontPressed=");
+  Serial.print(swFrontPressed() ? 1 : 0);
+  Serial.print(" rawB=");
+  Serial.print(digitalRead(PIN_SW_BACK));
+  Serial.print(" swB_stable=");
+  Serial.print(swB_stable);
+  Serial.print(" swBackPressed=");
+  Serial.println(swBackPressed() ? 1 : 0);
+
+  Serial.println("Homing -> BACK ...");
+  uint32_t t0 = millis();
+  while (true) {
+    updateSwitchDebounce();
+    if (swBackPressed()) break;
+    motorTowardFront(homingPwm);
+    if (millis() - t0 > 20000) {
+      motorStop();
+      Serial.println("Homing ERROR: timeout BACK");
+      return false;
+    }
+    delay(5);
+  }
+  motorStop();
+  delay(200);
+  int backAt = readPosRaw();
+  Serial.print("BACK reached. backAtSwitch=");
+  Serial.println(backAt);
+  if (!releaseBackHard()) return false;
+
+  Serial.println("Homing -> FRONT ...");
+  t0 = millis();
+  while (true) {
+    updateSwitchDebounce();
+    if (swFrontPressed()) break;
+    motorTowardBack(homingPwm);
+    if (millis() - t0 > 20000) {
+      motorStop();
+      Serial.println("Homing ERROR: timeout FRONT");
+      return false;
+    }
+    delay(5);
+  }
+  motorStop();
+  delay(200);
+  int frontAt = readPosRaw();
+  Serial.print("FRONT reached. frontAtSwitch=");
+  Serial.println(frontAt);
+
+  if (frontAt < 0 || backAt < 0) {
+    Serial.println("Homing ERROR: ADC invalid");
+    return false;
+  }
+
+  frontIsMin = (frontAt < backAt);
+  posMinMm = min(frontAt, backAt);
+  posMaxMm = max(frontAt, backAt);
+  centerMm = (posMinMm + posMaxMm) / 2;
+
+  Serial.print("frontIsMin=");
+  Serial.println(frontIsMin ? 1 : 0);
+  Serial.print("CENTER=");
+  Serial.println(centerMm);
+  Serial.print("RANGE=");
+  Serial.println(posMaxMm - posMinMm);
+
+  if (!releaseFrontHard()) return false;
+
+  computeSafeRange();
+  saveCalibration();
+  homed = true;
+
+  Serial.println("Homing -> GO CENTER ...");
+  bool okCenter = goToTargetBlocking(centerMm, 12000);
+  Serial.print("CENTER_OK=");
+  Serial.println(okCenter ? 1 : 0);
+
+  Serial.println("=== HOMING DONE ===");
+  return okCenter;
+}
+
+// ===================== COP -> CMD =====================
+int computeCmdFromCop(float cop) {
+  float c = clampf(cop, -copClamp, +copClamp);
+  if (fabs(c) < copDead) return 0;
+
+  float norm = c / copClamp;
+  if (copInvert) norm = -norm;
+
+  float expo = 0.25f;
+  float a = powf(fabs(norm), expo);
+
+  int pwm = (int)lroundf(vPwmMin + a * (vPwmMax - vPwmMin));
+  pwm = iClamp(pwm, 0, 255);
+
+  int signedPwm = (norm > 0) ? +pwm : -pwm;
+
+  if (signedPwm != 0 && abs(signedPwm) < pwmMinMove) {
+    signedPwm = (signedPwm > 0) ? +pwmMinMove : -pwmMinMove;
+  }
+  return signedPwm;
+}
+
+// Rampe continue
+int rampCmd(int cmdTarget) {
+  int delta = cmdTarget - cmdNow;
+  if (delta > slewPerStep) delta = slewPerStep;
+  if (delta < -slewPerStep) delta = -slewPerStep;
+  cmdNow += delta;
+
+  if (abs(cmdNow) < 2 && abs(cmdTarget) < 2) cmdNow = 0;
+  return cmdNow;
+}
+
+int applySlowZoneLimit(int cmdTarget, int pos)
+{
+  if (posMinSafe < 0 || posMaxSafe < 0) return cmdTarget;
+  if (cmdTarget == 0) return 0;
+
+  bool cmdFront = (cmdTarget > 0);
+  bool headingToMin = frontIsMin ? cmdFront : !cmdFront;
+
+  int dist = headingToMin ?
+             (pos - posMinSafe) :
+             (posMaxSafe - pos);
+
+  if (dist < 0) dist = 0;
+
+  // ---------- paramètres progressifs ----------
+  const int zone = slowZoneMm;     // ex: 120
+  const int stopZone = hardStopMm; // ex: 25
+
+  if (dist <= stopZone)
+  {
+    // zone morte AVANT butée → arrêt total
+    return 0;
+  }
+
+  if (dist < zone)
+  {
+    float ratio = (float)(dist - stopZone) / (float)(zone - stopZone);
+    ratio = constrain(ratio, 0.0f, 1.0f);
+
+    int sign = (cmdTarget > 0) ? +1 : -1;
+    int mag  = abs(cmdTarget);
+
+    // Décélération quadratique douce
+    mag = (int)(mag * ratio * ratio);
+
+    if (mag < pwmMinMove && dist > (stopZone + 20))
+      mag = pwmMinMove;
+
+    return sign * mag;
+  }
+
+  return cmdTarget;
+}
+
+
+
+bool shouldHardStop(int cmdTarget, int pos) {
+  if (posMinSafe < 0 || posMaxSafe < 0) return false;
+  if (cmdTarget == 0) return false;
+
+  bool cmdFront = (cmdTarget > 0);
+  bool headingToMin = frontIsMin ? cmdFront : !cmdFront;
+
+  int dist = headingToMin ? (pos - posMinSafe) : (posMaxSafe - pos);
+
+  // Hard stop uniquement si très proche
+  return dist <= hardStopMm;
+}
+
+// Kick seulement après un vrai arrêt
+void maybeKickStart(int cmdTarget) {
+  if (kickMs <= 0) return;
+  if (cmdNow != 0) return;
+  if (cmdTarget == 0) return;
+  if (zeroStartMs == 0) return;
+  if (millis() - zeroStartMs < kickMinStopMs) return;
+
+  kickUntilMs = millis() + (uint32_t)kickMs;
+  int s = (cmdTarget > 0) ? +1 : -1;
+  motorSetSigned(s * kickPwm);
+}
+
+void autoStep() {
+  if (!armed || !homed || !autoMode) return;
+
+  updateSwitchDebounce();
+  uint32_t now = millis();
+
+  if (now - lastCopMs > copWatchdogMs) {
+    motorSetSigned(rampCmd(0));
+    if (cmdNow == 0 && zeroStartMs == 0) zeroStartMs = now;
+    if (cmdNow != 0) zeroStartMs = 0;
+    return;
+  }
+
+  if (kickUntilMs != 0 && now < kickUntilMs) return;
+  if (kickUntilMs != 0 && now >= kickUntilMs) kickUntilMs = 0;
+
+  if (swFrontPressed()) {
+    motorStop();
+    cmdNow = 0;
+    kickUntilMs = 0;
+    zeroStartMs = now;
+    blockTowardFrontUntilMs = now + switchCooldownMs;
+    releaseFrontHard();
+    return;
+  }
+  if (swBackPressed()) {
+    motorStop();
+    cmdNow = 0;
+    kickUntilMs = 0;
+    zeroStartMs = now;
+    blockTowardBackUntilMs = now + switchCooldownMs;
+    releaseBackHard();
+    return;
+  }
+
+  int p = readPosFiltered();
+  if (p < 0) {
+    motorStop();
+    cmdNow = 0;
+    kickUntilMs = 0;
+    zeroStartMs = now;
+    return;
+  }
+  posMm = p;
+
+  int cmdTarget;
+
+  if (posMode) {
+    // ==============================
+    // MODE POSITION : COP -> posRef -> PID
+    // ==============================
+    uint32_t nowPos = millis();
+    float dt = (nowPos - lastPosCtrlMs) / 1000.0f;
+    lastPosCtrlMs = nowPos;
+    if (dt <= 0.0f || dt > 0.1f) dt = 0.01f;
+
+    float cop  = constrain(copY, -copClamp, copClamp);
+    float norm = cop / copClamp;
+    if (copInvert) norm = -norm;
+
+    if (abs(norm) < 0.02f) {
+      norm   = 0.0f;
+    }
+
+    float amplitudeMax = 1300.0f;   // demi-course max autorisée (ADC)
+    posRef = centerMm + norm * amplitudeMax;
+    posRef  = constrain(posRef, (float)posMinSafe, (float)posMaxSafe);
+
+    float err = posRef - posMm;
+    float velRaw = (posMm - lastPosMm) / dt;
+    lastPosMm = posMm;
+
+    // filtre passe-bas sur la vitesse
+    velFilt = 0.9f * velFilt + 0.1f * velRaw;
+    float vel = velFilt;
+
+    float cmd = Kp * err - Kd * vel;
+    cmd = constrain(cmd, (float)-pwmMaxPos, (float)pwmMaxPos);
+    cmdTarget = -(int)cmd;
+
+    float deadZone = 120.0f;     // zone morte large (ADC)
+    float softZone = 250.0f;    // zone amortie
+
+    if (fabs(err) < deadZone) {
+        cmdTarget = 0;
+    }
+    else if (fabs(err) < softZone) {
+        cmdTarget = cmdTarget / 3;   // amortissement fort près cible
+    }
+
+  } else {
+    // MODE VITESSE original
+    cmdTarget = computeCmdFromCop(copY);
+  }
+
+  if (cmdTarget > 0 && now < blockTowardFrontUntilMs) cmdTarget = 0;
+  if (cmdTarget < 0 && now < blockTowardBackUntilMs) cmdTarget = 0;
+
+  if (shouldHardStop(cmdTarget, posMm)) {
+    motorStop();
+    cmdNow = 0;
+    kickUntilMs = 0;
+    cmdTarget = 0;
+  } else {
+    cmdTarget = applySlowZoneLimit(cmdTarget, posMm);
+  }
+
+  if (cmdTarget == 0 && cmdNow == 0) {
+    if (zeroStartMs == 0) zeroStartMs = now;
+  } else {
+    zeroStartMs = 0;
+  }
+
+  maybeKickStart(cmdTarget);
+  if (kickUntilMs != 0) return;
+
+  int out = rampCmd(cmdTarget);
+  motorSetSigned(out);
+
+  static uint32_t lastDbg = 0;
+  if (dbg && millis() - lastDbg > 200) {
+    lastDbg = millis();
+    float err = posRef - posMm;
+    Serial.print("center=");
+    Serial.print(centerMm);
+    Serial.print(" pos=");
+    Serial.print(posMm);
+    Serial.print(" posRef=");
+    Serial.print(posRef);
+    Serial.print(" err=");
+    Serial.println(err);
+  }
+}
+
+// ===================== Serial =====================
+String bufUSB, bufUART;
+
+void printState(Print& out) {
+  out.print("STATE armed=");
+  out.print(armed ? 1 : 0);
+  out.print(" homed=");
+  out.print(homed ? 1 : 0);
+  out.print(" auto=");
+  out.print(autoMode ? 1 : 0);
+  out.print(" copY=");
+  out.print(copY, 3);
+  out.print(" pos=");
+  out.print(posMm);
+  out.print(" minS=");
+  out.print(posMinSafe);
+  out.print(" maxS=");
+  out.print(posMaxSafe);
+  out.print(" frontIsMin=");
+  out.print(frontIsMin ? 1 : 0);
+  out.print(" copInvert=");
+  out.print(copInvert ? 1 : 0);
+  out.print(" rawF=");
+  out.print(digitalRead(PIN_SW_FRONT));
+  out.print(" rawB=");
+  out.print(digitalRead(PIN_SW_BACK));
+  out.print(" debF=");
+  out.print(swFrontPressed() ? 1 : 0);
+  out.print(" debB=");
+  out.println(swBackPressed() ? 1 : 0);
+}
+
+bool looksLikeGarbage(const String& s) {
+  if (s == "STOP" || s == "STAT" || s == "REL" || s == "HOME" || s == "HOME:1" || s == "CENTER" || s == "CENTER:1" || s == "POS?") return false;
+
+  if (s.startsWith("ARM:") || s.startsWith("AUTO:") || s.startsWith("COP:") || s.startsWith("COP:Y:")) return false;
+  if (s.startsWith("CAL:") || s.startsWith("COPINV:") || s.startsWith("DBG:COP:") || s.startsWith("SET:") || s.startsWith("PROFILE:")) return false;
+
+  bool hasColon = (s.indexOf(':') >= 0);
+  bool hasAlpha = false;
+  for (int i = 0; i < s.length(); i++)
+    if (isAlpha((unsigned char)s[i])) {
+      hasAlpha = true;
+      break;
+    }
+  if (!hasColon && !hasAlpha) return true;
+  return false;
+}
+
+void handleLine(const String& sRaw, Print& out) {
+  String s = sRaw;
+  s.trim();
+  if (!s.length()) return;
+  if (looksLikeGarbage(s)) return;
+
+  if (s.startsWith("ARM:")) {
+    if (estopActive()) {
+      out.println("ARM BLOCKED: ESTOP ACTIVE");
+      return;
+    }
+    armed = (s.substring(4).toInt() != 0);
+    if (!armed) {
+      motorStop();
+      autoMode = false;
+      cmdNow = 0;
+      kickUntilMs = 0;
+      zeroStartMs = millis();
+    }
+    out.print("ARMED=");
+    Serial.println(armed ? 1 : 0);
+    return;
+  }
+
+  if (s == "PING") {
+    Serial.println("PONG");
+    return;
+  }
+
+  if (s == "HOME" || s == "HOME:1") {
+    if (estopActive()) {
+      out.println("HOME BLOCKED: ESTOP ACTIVE");
+      return;
+    }
+    bool ok = doHoming();
+    out.print("HOME_OK=");
+    Serial.println(ok ? 1 : 0);
+    return;
+  }
+
+  if (s == "POS?") {
+    int p = readPosRaw();
+    out.print("POS_RAW=");
+    out.println(p);
+    return;
+  }
+
+  if (s == "CENTER" || s == "CENTER:1") {
+    if (!armed || !homed) {
+      Serial.println("CENTER ERROR: need ARM=1 and homed=1");
+      Serial.print("CENTER_OK=");
+      Serial.println(0);
+      return;
+    }
+    autoMode = false;
+    motorStop();
+    cmdNow = 0;
+    kickUntilMs = 0;
+    zeroStartMs = millis();
+
+    bool ok = goToTargetBlocking(centerMm, 12000);
+    out.print("CENTER_OK=");
+    Serial.println(ok ? 1 : 0);
+    return;
+  }
+
+  if (s.startsWith("AUTO:")) {
+    autoMode = (s.substring(5).toInt() != 0);
+    if (!autoMode) {
+      motorStop();
+      cmdNow = 0;
+      kickUntilMs = 0;
+      zeroStartMs = millis();
+    } else {
+      cmdNow = 0;
+      kickUntilMs = 0;
+      zeroStartMs = millis();
+      posRef = posMm;        // pas de saut au démarrage
+      lastPosMm = posMm;
+      lastPosCtrlMs = millis();
+    }
+    Serial.print("AUTO=");
+    Serial.println(autoMode ? 1 : 0);
+    return;
+  }
+  if (s == "TEST:FRONT") {
+    Serial.println("Moving toward FRONT for 2s...");
+    motorTowardFront(80);
+    delay(2000);
+    motorStop();
+    Serial.println("Stopped");
+    return;
+  }
+
+  if (s == "TEST:BACK") {
+    Serial.println("Moving toward BACK for 2s...");
+    motorTowardBack(80);
+    delay(2000);
+    motorStop();
+    Serial.println("Stopped");
+    return;
+  }
+  if (s.startsWith("COP:Y:")) {
+    String v = s.substring(6);
+    copY = v.toFloat();
+    lastCopMs = millis();
+    if (dbgCop) {
+      Serial.print("RX_COP:'");
+      Serial.print(v);
+      Serial.println("'");
+    }
+    return;
+  }
+  if (s.startsWith("COP:")) {
+    String v = s.substring(4);
+    copY = v.toFloat();
+    lastCopMs = millis();
+    if (dbgCop) {
+      Serial.print("RX_COP:'");
+      Serial.print(v);
+      Serial.println("'");
+    }
+    return;
+  }
+
+  if (s == "REL") {
+    bool ok = releaseAny();
+    Serial.print("REL_ANY=");
+    Serial.println(ok ? 1 : 0);
+    return;
+  }
+  if (s == "STAT") {
+    printState(out);
+    return;
+  }
+
+  if (s == "PARAMS?" || s == "PARAMS") {
+    Serial.print("PARAMS ");
+    Serial.print("SLEW=");
+    Serial.print(slewPerStep);
+    Serial.print(" PMIN=");
+    Serial.print(pwmMinMove);
+    Serial.print(" KICKPWM=");
+    Serial.print(kickPwm);
+    Serial.print(" KICKMS=");
+    Serial.print(kickMs);
+    Serial.print(" ENDMARGIN=");
+    Serial.print(endMarginMm);
+    Serial.print(" SLOWZONE=");
+    Serial.print(slowZoneMm);
+    Serial.print(" SLOWPWM=");
+    Serial.print(slowPwmMax);
+    Serial.print(" HARDSTOP=");
+    Serial.print(hardStopMm);
+    Serial.print(" COPINV=");
+    Serial.print(copInvert ? 1 : 0);
+    Serial.println();
+    return;
+  }
+
+  if (s == "CAL:CLR") {
+    clearCalibration();
+    return;
+  }
+
+  if (s.startsWith("COPINV:")) {
+    copInvert = (s.substring(7).toInt() != 0);
+    saveCalibration();
+    Serial.print("COPINV=");
+    Serial.println(copInvert ? 1 : 0);
+    return;
+  }
+
+  if (s.startsWith("DBG:COP:")) {
+    dbgCop = (s.substring(8).toInt() != 0);
+    Serial.print("DBG_COP=");
+    Serial.println(dbgCop ? 1 : 0);
+    return;
+  }
+
+  if (s == "PROFILE:SOT") {
+    slewPerStep = 60;
+    pwmMinMove = 30;
+    kickPwm = 140;
+    kickMs = 50;
+    endMarginMm = 80;  // ADC
+    slowZoneMm = 120;  // ADC
+    slowPwmMax = 90;
+    hardStopMm = 25;  // ADC
+
+    computeSafeRange();
+    saveCalibration();
+
+    Serial.println("PROFILE=SOT OK");
+    return;
+  }
+
+  if (s.startsWith("SET:SLEW:")) {
+    slewPerStep = iClamp((int)s.substring(9).toInt(), 1, 50);
+    Serial.print("SLEW=");
+    Serial.println(slewPerStep);
+    return;
+  }
+  if (s.startsWith("SET:ENDMARGIN:")) {
+    endMarginMm = iMax(0, (int)s.substring(14).toInt());
+    computeSafeRange();
+    saveCalibration();
+    Serial.print("ENDMARGIN=");
+    Serial.println(endMarginMm);
+    return;
+  }
+  if (s.startsWith("SET:SLOWZONE:")) {
+    slowZoneMm = iMax(0, (int)s.substring(13).toInt());
+    saveCalibration();
+    Serial.print("SLOWZONE=");
+    Serial.println(slowZoneMm);
+    return;
+  }
+  if (s.startsWith("SET:SLOWPWM:")) {
+    slowPwmMax = iClamp((int)s.substring(12).toInt(), 0, 255);
+    saveCalibration();
+    Serial.print("SLOWPWM=");
+    Serial.println(slowPwmMax);
+    return;
+  }
+  if (s.startsWith("SET:REL:PWM:")) {
+    releasePwm = iClamp((int)s.substring(12).toInt(), 0, 255);
+    saveCalibration();
+    Serial.print("REL_PWM=");
+    Serial.println(releasePwm);
+    return;
+  }
+  if (s.startsWith("SET:REL:TO:")) {
+    releaseToMs = (uint32_t)iMax(100, (int)s.substring(11).toInt());
+    saveCalibration();
+    Serial.print("REL_TO_MS=");
+    Serial.println(releaseToMs);
+    return;
+  }
+  if (s.startsWith("SET:HARDSTOP:")) {
+    hardStopMm = iClamp((int)s.substring(13).toInt(), 0, 500);
+    saveCalibration();
+    Serial.print("HARDSTOP=");
+    Serial.println(hardStopMm);
+    return;
+  }
+  if (s.startsWith("SET:PMIN:")) {
+    pwmMinMove = iClamp((int)s.substring(9).toInt(), 0, 255);
+    saveCalibration();
+    Serial.print("PMIN=");
+    Serial.println(pwmMinMove);
+    return;
+  }
+  if (s.startsWith("SET:KICKPWM:")) {
+    kickPwm = iClamp((int)s.substring(12).toInt(), 0, 255);
+    saveCalibration();
+    Serial.print("KICKPWM=");
+    Serial.println(kickPwm);
+    return;
+  }
+  if (s.startsWith("SET:KICKMS:")) {
+    kickMs = iClamp((int)s.substring(11).toInt(), 0, 500);
+    saveCalibration();
+    Serial.print("KICKMS=");
+    Serial.println(kickMs);
+    return;
+  }
+
+  if (s == "STOP") {
+    motorStop();
+    armed = false;
+    autoMode = false;
+    cmdNow = 0;
+    kickUntilMs = 0;
+    zeroStartMs = millis();
+    Serial.println("STOP OK");
+    return;
+  }
+
+  out.print("Unknown cmd: ");
+  Serial.println(s);
+}
+
+void readLines(Stream& ser, String& buf, Print& out) {
+  while (ser.available()) {
+    char c = (char)ser.read();
+    if (c == '\r') continue;
+    if (c == '\n') {
+      String s = buf;
+      buf = "";
+      Serial.print("[UART_LINE] '");
+      Serial.print(s);
+      Serial.println("'");
+      handleLine(s, out);
+    } else {
+      if (buf.length() < 200) buf += c;
+    }
+  }
+}
+
+// ===================== Setup / Loop =====================
+void setup() {
+  Serial.begin(115200);
+  delay(1200);
+
+  // Switches (GND <-> GPIO)
+  pinMode(PIN_SW_BACK, INPUT_PULLUP);
+  pinMode(PIN_SW_FRONT, INPUT_PULLUP);
+
+  // Arret d'urgence (NC)
+  pinMode(PIN_ESTOP, INPUT_PULLUP);
+
+  pinMode(PIN_REN, OUTPUT);
+  pinMode(PIN_LEN, OUTPUT);
+
+  ledcAttach(PIN_RPWM, PWM_FREQ, PWM_RES);
+  ledcAttach(PIN_LPWM, PWM_FREQ, PWM_RES);
+
+  motorStop();
+
+  // ADC config
+  analogReadResolution(12);  // 0..4095
+
+  // UART vers Pi
+  Serial2.setRxBufferSize(1024);
+  Serial2.begin(115200, SERIAL_8N1, UART_RX, UART_TX);
+
+  swF_rawPrev = digitalRead(PIN_SW_FRONT);
+  swB_rawPrev = digitalRead(PIN_SW_BACK);
+  swF_stable = swF_rawPrev;
+  swB_stable = swB_rawPrev;
+  swF_lastChange = swB_lastChange = millis();
+
+  zeroStartMs = millis();
+
+  Serial.println("BOOT...");
+  if (!loadCalibration()) Serial.println("CAL: not found (run HOME)");
+  Serial.println("READY");
+  Serial.println("Cmds: ARM:1 HOME CENTER AUTO:1 COP:Y:x STOP STAT REL CAL:CLR COPINV:0/1 DBG:COP:1 POS? PROFILE:SOT SET:* PARAMS?");
+}
+
+void loop() {
+
+
+  readLines(Serial, bufUSB, Serial);     // USB -> répond sur USB
+  readLines(Serial2, bufUART, Serial2);  // Pi  -> répond au Pi
+
+  // ARRET D'URGENCE - apres lecture commandes pour que STAT fonctionne toujours
+  estopCheck();
+  if (estopTriggered) return;
+
+  static uint32_t lastStep = 0;
+  uint32_t now = millis();
+
+  updateSwitchDebounce();
+
+  // lecture position à ~200 Hz
+  static uint32_t lastPos = 0;
+  if (now - lastPos >= 5) {
+    lastPos = now;
+    int p = readPosFiltered();
+    if (p >= 0) posMm = p;
+  }
+
+  // autoStep très rapide (2ms)
+  if (now - lastStep >= 2) {
+  lastStep = now;
+  autoStep();
+  }
+}
