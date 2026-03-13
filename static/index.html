@@ -248,8 +248,8 @@
           <span id="more-session-count" class="text-sm text-muted">–</span>
         </div>
         <div class="flex gap-8 flex-wrap">
-          <button class="btn btn-ghost btn-full" onclick="exportCSV()">📥 Export CSV</button>
-          <button class="btn btn-ghost btn-full" onclick="exportSessions()">📥 Export JSON</button>
+          <a class="btn btn-ghost btn-full" href="/sessions/export.csv">📥 Export CSV</a>
+          <a class="btn btn-ghost btn-full" href="/sessions/export.json">📥 Export JSON</a>
         </div>
       </div>
 
@@ -262,21 +262,40 @@
         </div>
       </div>
 
+      <!-- VIDEO MANAGEMENT -->
+      <div class="card">
+        <div class="card-title">Vidéos (Ex12)</div>
+        <div class="text-sm text-muted mb-12">
+          Ajouter des vidéos MP4 pour l'exercice 12. Elles sont lues via MPV (plus fluide que Chromium).
+        </div>
+        <div id="video-list-panel" class="mb-12">
+          <div class="text-xs text-muted">Chargement...</div>
+        </div>
+        <div class="flex gap-8 flex-wrap">
+          <label class="btn btn-blue btn-full" style="cursor:pointer">
+            📂 Ajouter une vidéo
+            <input type="file" accept=".mp4,video/mp4" style="display:none" onchange="uploadVideo(event)"/>
+          </label>
+        </div>
+        <div id="upload-progress" class="text-sm text-muted mt-8 hidden">Upload en cours...</div>
+      </div>
+
       <!-- Install PWA -->
       <div class="card" id="install-card">
-        <div class="card-title">Application</div>
+        <div class="card-title">Application PWA</div>
         <div class="text-sm text-muted mb-12">Installer PosturoSPS sur cet appareil pour un accès hors-ligne.</div>
         <button class="btn btn-blue btn-full hidden" id="btn-install" onclick="installApp()">📲 Installer l'application</button>
-        <div class="text-xs text-muted">Sur iOS: utiliser Safari → <em>Partager → Sur l'écran d'accueil</em></div>
+        <div class="text-xs text-muted">Sur iOS : utiliser Safari → <em>Partager → Sur l'écran d'accueil</em></div>
       </div>
 
       <!-- System -->
       <div class="card">
-        <div class="card-title">Système</div>
+        <div class="card-title" style="color:var(--c-red)">Système</div>
         <div class="flex gap-8 flex-wrap">
-          <a class="btn btn-ghost btn-full" href="/" target="_blank">🔧 Interface classique</a>
           <a class="btn btn-ghost btn-full" href="/exercices" target="_blank">🏋️ UI Exercices (legacy)</a>
-          <button class="btn btn-red btn-full" onclick="shutdownPi()">⏻ Éteindre le Raspberry Pi</button>
+          <button class="btn btn-red btn-full btn-lg" onclick="shutdownPi()" style="margin-top:8px">
+            ⏻ Éteindre le Raspberry Pi
+          </button>
         </div>
       </div>
 
@@ -395,6 +414,77 @@ if ('serviceWorker' in navigator) {
     if (el) el.textContent = 'Mode hors-ligne disponible ✅';
   });
 }
+
+// ---- VIDEO MANAGEMENT (Plus tab) ----
+async function loadVideoListPanel() {
+  const panel = document.getElementById('video-list-panel');
+  if (!panel) return;
+  try {
+    const r = await fetch('/videos/list');
+    const d = await r.json();
+    const vids = d.videos || [];
+    if (!vids.length) {
+      panel.innerHTML = '<div class="text-xs text-muted">Aucune vidéo – ajoutez des fichiers .mp4</div>';
+      return;
+    }
+    panel.innerHTML = vids.map(v => `
+      <div class="flex items-center justify-between" style="padding:6px 0;border-bottom:1px solid var(--c-border)">
+        <span class="text-sm">🎬 ${v}</span>
+        <div class="flex gap-8">
+          <button class="btn btn-ghost btn-sm" onclick="testPlayVideo('${v}')">▶ Test MPV</button>
+          <button class="btn btn-red btn-sm" onclick="deleteVideo('${v}')">🗑</button>
+        </div>
+      </div>`).join('');
+  } catch(e) {
+    panel.innerHTML = '<div class="text-xs text-muted">Erreur de chargement</div>';
+  }
+}
+
+async function uploadVideo(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  const prog = document.getElementById('upload-progress');
+  if (prog) prog.classList.remove('hidden');
+  if (typeof toast === 'function') toast('⬆️ Upload en cours...', 'ok', 30000);
+  const form = new FormData();
+  form.append('file', file);
+  try {
+    const r = await fetch('/videos/upload', { method: 'POST', body: form });
+    const d = await r.json();
+    if (d.ok) {
+      if (typeof toast === 'function') toast(`✅ ${file.name} ajouté`, 'ok');
+      loadVideoListPanel();
+    } else {
+      if (typeof toast === 'function') toast('❌ Erreur upload', 'err');
+    }
+  } catch(e) {
+    if (typeof toast === 'function') toast('❌ Erreur réseau', 'err');
+  }
+  if (prog) prog.classList.add('hidden');
+  event.target.value = '';
+}
+
+async function deleteVideo(filename) {
+  if (!confirm(`Supprimer ${filename} ?`)) return;
+  const r = await fetch('/videos/delete/' + encodeURIComponent(filename), { method: 'POST' });
+  const d = await r.json();
+  if (d.ok) {
+    if (typeof toast === 'function') toast('🗑 Supprimé', 'ok');
+    loadVideoListPanel();
+  }
+}
+
+async function testPlayVideo(filename) {
+  await fetch('/mpv/play?file=' + encodeURIComponent(filename));
+  if (typeof toast === 'function') toast(`▶ MPV: ${filename}`, 'ok');
+}
+
+// Load video list when More tab is shown
+const _origRenderMore = window.renderMore;
+window.renderMore = function() {
+  if (typeof _origRenderMore === 'function') _origRenderMore();
+  loadVideoListPanel();
+};
 </script>
 
 <script src="/static/app.js"></script>

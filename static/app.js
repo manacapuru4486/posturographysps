@@ -274,15 +274,19 @@ function updateSOTButtons() {
   const idle = State.sotCondition === 0;
   const done = State.sotCondition > 6;
 
-  if (btnStart) btnStart.style.display = idle ? '' : 'none';
-  if (btnNext)  btnNext.style.display  = (!idle && !done && !State.sotRunning) ? '' : 'none';
-  if (btnStop)  btnStop.style.display  = (!idle && !done) ? '' : 'none';
-  if (btnReset) btnReset.style.display = (!idle) ? '' : 'none';
+  // "Suivant" visible: in a condition + timer not running (expired OR never started)
+  const inCondition = !idle && !done;
+  if (btnStart)  btnStart.style.display  = idle ? '' : 'none';
+  if (btnNext)   btnNext.style.display   = (inCondition && !State.sotRunning) ? '' : 'none';
+  if (btnStop)   btnStop.style.display   = inCondition ? '' : 'none';
+  if (btnReset)  btnReset.style.display  = !idle ? '' : 'none';
   if (btnReport) btnReport.style.display = done ? '' : 'none';
   if (condNum) {
     if (idle) condNum.textContent = 'Prêt';
     else if (done) condNum.textContent = 'Terminé ✅';
-    else condNum.textContent = `Condition ${State.sotCondition}/6`;
+    else condNum.textContent = State.sotRunning
+      ? `C${State.sotCondition}/6 – En cours`
+      : `C${State.sotCondition}/6 – Terminée`;
   }
 }
 
@@ -377,7 +381,10 @@ function startSOTTimer(duration) {
     if (State.sotElapsed >= duration) {
       if (timerEl) timerEl.className = 'done';
       stopSOTTimer();
-      toast('✅ Condition terminée – appuyez SUIVANT', 'ok', 5000);
+      // Mark condition as no longer running so "Suivant" becomes visible
+      State.sotRunning = false;
+      updateSOTButtons();
+      toast('✅ Condition terminée – appuyez SUIVANT', 'ok', 8000);
     }
   }, 1000);
 }
