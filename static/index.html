@@ -1,0 +1,402 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"/>
+  <meta name="theme-color" content="#1d4ed8"/>
+  <meta name="apple-mobile-web-app-capable" content="yes"/>
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+  <meta name="apple-mobile-web-app-title" content="PosturoSPS"/>
+  <meta name="description" content="Système de posturographie stabilométrique"/>
+  <title>PosturoSPS</title>
+  <link rel="manifest" href="/static/manifest.json"/>
+  <link rel="apple-touch-icon" href="/static/icons/icon-192.png"/>
+  <link rel="stylesheet" href="/static/app.css"/>
+</head>
+<body>
+<div id="app">
+
+  <!-- TOP BAR -->
+  <header id="topbar">
+    <div class="logo">Posturo<span>SPS</span></div>
+    <div class="status-pill">
+      <div class="status-dot" id="status-dot"></div>
+      <span id="status-label">Chargement...</span>
+    </div>
+  </header>
+
+  <!-- MAIN CONTENT -->
+  <div id="main-scroll">
+
+    <!-- ==================== HOME PAGE ==================== -->
+    <div class="page active" id="page-home">
+
+      <div id="home-patient" style="font-size:13px;color:var(--c-muted);margin-bottom:14px;">Aucun patient sélectionné</div>
+
+      <!-- Plateforme status card -->
+      <div class="card">
+        <div class="card-title">État plateforme</div>
+        <div class="flex gap-8 flex-wrap mb-12">
+          <div class="flex items-center gap-8">
+            <span style="font-size:13px;color:var(--c-muted)">Tare :</span>
+            <span class="badge badge-red" id="home-tare-st">EN ATTENTE</span>
+          </div>
+          <div class="flex items-center gap-8">
+            <span style="font-size:13px;color:var(--c-muted)">Centrage :</span>
+            <span class="badge badge-red" id="home-center-st">EN ATTENTE</span>
+          </div>
+        </div>
+        <div class="flex gap-8">
+          <button class="btn btn-blue btn-full" id="btn-tare" onclick="doTare()">1) TARE</button>
+          <button class="btn btn-blue btn-full" id="btn-center" onclick="doCenter()">2) SET CENTER</button>
+        </div>
+      </div>
+
+      <!-- Quick actions -->
+      <div class="section-title">Actions rapides</div>
+      <div class="hero-grid">
+        <button class="hero-btn green" onclick="navigate('sot')">
+          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+          <div class="hero-label">Lancer SOT</div>
+          <div class="hero-sub">Bilan sensoriel</div>
+        </button>
+        <button class="hero-btn blue" onclick="navigate('exercises')">
+          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.348a1.125 1.125 0 010 1.971l-11.54 6.347a1.125 1.125 0 01-1.667-.985V5.653z"/></svg>
+          <div class="hero-label">Exercices</div>
+          <div class="hero-sub">12 exercices</div>
+        </button>
+        <button class="hero-btn orange" onclick="navigate('patients')">
+          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 6a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0zM4.501 20.118a7.5 7.5 0 0114.998 0A17.933 17.933 0 0112 21.75c-2.676 0-5.216-.584-7.499-1.632z"/></svg>
+          <div class="hero-label">Patients</div>
+          <div class="hero-sub">Dossiers</div>
+        </button>
+        <button class="hero-btn purple" onclick="navigate('more')">
+          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.324.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 011.37.49l1.296 2.247a1.125 1.125 0 01-.26 1.431l-1.003.827c-.293.24-.438.613-.431.992a6.759 6.759 0 010 .255c-.007.378.138.75.43.99l1.005.828c.424.35.534.954.26 1.43l-1.298 2.247a1.125 1.125 0 01-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.57 6.57 0 01-.22.128c-.331.183-.581.495-.644.869l-.213 1.28c-.09.543-.56.941-1.11.941h-2.594c-.55 0-1.02-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 01-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 01-1.369-.49l-1.297-2.247a1.125 1.125 0 01.26-1.431l1.004-.827c.292-.24.437-.613.43-.992a6.932 6.932 0 010-.255c.007-.378-.138-.75-.43-.99l-1.004-.828a1.125 1.125 0 01-.26-1.43l1.297-2.247a1.125 1.125 0 011.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.087.22-.128.332-.183.582-.495.644-.869l.214-1.281z"/><path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+          <div class="hero-label">Réglages</div>
+          <div class="hero-sub">ESP32 + logs</div>
+        </button>
+      </div>
+
+      <!-- Platform quick controls -->
+      <div class="card">
+        <div class="card-title">Contrôle plateforme rapide</div>
+        <div class="flex gap-8 flex-wrap">
+          <button class="btn btn-ghost btn-sm" onclick="espHome()">🏠 HOME</button>
+          <button class="btn btn-ghost btn-sm" onclick="espCenter()">⊙ CENTER</button>
+          <button class="btn btn-blue btn-sm" onclick="espStart()">▶ ASSERV</button>
+          <button class="btn btn-red btn-sm" onclick="espStop()">■ STOP</button>
+        </div>
+      </div>
+
+      <!-- COP mini display -->
+      <div class="card">
+        <div class="card-title">COP en direct</div>
+        <canvas id="home-cop-canvas" width="200" height="200" style="display:block;width:200px;height:200px;margin:0 auto;border-radius:8px;"></canvas>
+        <div class="cop-vals">
+          <div class="cop-val"><div class="kk">COP X (cm)</div><div class="vv" id="home-cop-x">0.00</div></div>
+          <div class="cop-val"><div class="kk">COP Y (cm)</div><div class="vv" id="home-cop-y">0.00</div></div>
+          <div class="cop-val"><div class="kk">CMD</div><div class="vv" id="home-cop-cmd">0.000</div></div>
+        </div>
+      </div>
+
+    </div><!-- /page-home -->
+
+    <!-- ==================== SOT PAGE ==================== -->
+    <div class="page" id="page-sot">
+
+      <h2 style="font-size:20px;font-weight:800;margin-bottom:4px;">SOT</h2>
+      <div style="font-size:13px;color:var(--c-muted);margin-bottom:16px;">Sensory Organization Test – 6 conditions</div>
+
+      <!-- Setup steps -->
+      <div class="card" id="sot-setup-card">
+        <div class="card-title">Initialisation</div>
+        <div class="flex gap-8 flex-wrap">
+          <button class="btn btn-blue btn-full" onclick="doSOTTare()">1) TARE</button>
+          <button class="btn btn-blue btn-full" onclick="doSOTCenter()">2) CENTRAGE</button>
+        </div>
+        <div class="flex gap-8 mt-8">
+          <div class="flex items-center gap-8">
+            <span class="badge badge-muted" id="sot-tare-st">Tare EN ATTENTE</span>
+          </div>
+          <div class="flex items-center gap-8">
+            <span class="badge badge-muted" id="sot-center-st">Centre EN ATTENTE</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Conditions grid -->
+      <div class="card">
+        <div class="flex items-center justify-between mb-12">
+          <div class="card-title" style="margin-bottom:0">Conditions</div>
+          <div id="sot-cond-num-label" style="font-size:14px;font-weight:700;color:var(--c-blue)">Prêt</div>
+        </div>
+        <div class="sot-grid" id="sot-cond-grid"></div>
+      </div>
+
+      <!-- Timer -->
+      <div class="card text-center">
+        <div id="sot-timer">00:00</div>
+        <div id="sot-progress"><div id="sot-progress-bar"></div></div>
+      </div>
+
+      <!-- SOT Controls -->
+      <div class="flex gap-8 flex-wrap mb-12">
+        <button class="btn btn-green btn-full btn-lg" id="sot-btn-start" onclick="sotStartFirst()">▶ DÉMARRER SOT</button>
+        <button class="btn btn-blue btn-full" id="sot-btn-next" style="display:none" onclick="sotNext()">SUIVANT ›</button>
+        <button class="btn btn-red btn-full" id="sot-btn-stop" style="display:none" onclick="sotStop()">■ STOP</button>
+        <button class="btn btn-ghost btn-sm" id="sot-btn-restart" onclick="sotRestart()" style="display:none">↺ Relancer C</button>
+      </div>
+      <div class="flex gap-8 flex-wrap">
+        <button class="btn btn-ghost btn-full" id="sot-btn-reset" style="display:none" onclick="sotReset()">⟳ Réinitialiser</button>
+        <a class="btn btn-green btn-full" id="sot-btn-report" href="/sot/report.pdf" target="_blank" style="display:none">📄 Télécharger rapport PDF</a>
+      </div>
+
+      <!-- Live COP -->
+      <div class="card mt-12">
+        <div class="card-title">COP en direct</div>
+        <canvas id="sot-cop-canvas" width="200" height="200" style="display:block;width:200px;height:200px;margin:0 auto;border-radius:8px;"></canvas>
+        <div class="cop-vals">
+          <div class="cop-val"><div class="kk">X (cm)</div><div class="vv" id="sot-cop-x">0.00</div></div>
+          <div class="cop-val"><div class="kk">Y (cm)</div><div class="vv" id="sot-cop-y">0.00</div></div>
+        </div>
+      </div>
+
+      <!-- SOT History -->
+      <div class="card">
+        <div class="card-title">Rapports précédents</div>
+        <a class="btn btn-ghost btn-full" href="/sot/results.json" target="_blank">📊 Résultats JSON</a>
+        <a class="btn btn-ghost btn-full mt-8" href="/sot/report.pdf" target="_blank">📄 Rapport PDF</a>
+      </div>
+
+    </div><!-- /page-sot -->
+
+    <!-- ==================== EXERCISES PAGE ==================== -->
+    <div class="page" id="page-exercises">
+
+      <h2 style="font-size:20px;font-weight:800;margin-bottom:4px;">Exercices</h2>
+      <div style="font-size:13px;color:var(--c-muted);margin-bottom:16px;">12 exercices de rééducation posturale</div>
+
+      <!-- Filter tabs -->
+      <div class="flex gap-8 mb-12" id="ex-filter-tabs" style="overflow-x:auto;padding-bottom:4px;flex-wrap:nowrap;"></div>
+
+      <!-- Exercise library -->
+      <div class="section-title">Bibliothèque</div>
+      <div class="ex-grid mb-16" id="ex-library-grid"></div>
+
+      <!-- Config panel (shown when exercise selected) -->
+      <div id="ex-config-panel" class="hidden"></div>
+
+      <!-- COP live -->
+      <div class="card">
+        <div class="card-title">COP en direct</div>
+        <canvas id="ex-cop-canvas" width="160" height="160" style="display:block;width:160px;height:160px;margin:0 auto;border-radius:8px;"></canvas>
+        <div class="cop-vals">
+          <div class="cop-val"><div class="kk">X</div><div class="vv" id="ex-cop-x">0.00</div></div>
+          <div class="cop-val"><div class="kk">Y</div><div class="vv" id="ex-cop-y">0.00</div></div>
+        </div>
+        <div class="mt-8">
+          <div id="ex-live-score-text" class="text-sm text-muted text-center">Prêt</div>
+        </div>
+      </div>
+
+      <!-- Presets -->
+      <div class="section-title">Presets séance</div>
+      <div class="preset-grid" id="preset-grid"></div>
+
+    </div><!-- /page-exercises -->
+
+    <!-- ==================== PATIENTS PAGE ==================== -->
+    <div class="page" id="page-patients">
+
+      <div class="flex items-center justify-between mb-16">
+        <div>
+          <h2 style="font-size:20px;font-weight:800;margin-bottom:2px;">Patients</h2>
+          <div style="font-size:13px;color:var(--c-muted)">Dossiers et historique</div>
+        </div>
+        <button class="btn btn-blue btn-sm" onclick="openNewPatientModal()">+ Nouveau</button>
+      </div>
+
+      <div id="patient-list"></div>
+
+    </div><!-- /page-patients -->
+
+    <!-- ==================== MORE / SETTINGS PAGE ==================== -->
+    <div class="page" id="page-more">
+
+      <h2 style="font-size:20px;font-weight:800;margin-bottom:16px;">Réglages & Outils</h2>
+
+      <!-- Platform -->
+      <div class="card">
+        <div class="card-title">Plateforme ESP32</div>
+        <div class="flex items-center justify-between mb-12">
+          <span class="text-sm">Connexion ESP</span>
+          <span class="badge badge-muted" id="more-esp-status">–</span>
+        </div>
+        <div class="flex gap-8 flex-wrap">
+          <button class="btn btn-ghost btn-sm" onclick="espHome()">🏠 HOME</button>
+          <button class="btn btn-ghost btn-sm" onclick="espCenter()">⊙ CENTER</button>
+          <button class="btn btn-blue btn-sm" onclick="espStart()">▶ ASSERV</button>
+          <button class="btn btn-red btn-sm" onclick="espStop()">■ STOP ESP</button>
+        </div>
+      </div>
+
+      <!-- Sessions export -->
+      <div class="card">
+        <div class="card-title">Séances</div>
+        <div class="flex items-center justify-between mb-12">
+          <span class="text-sm">Séances enregistrées</span>
+          <span id="more-session-count" class="text-sm text-muted">–</span>
+        </div>
+        <div class="flex gap-8 flex-wrap">
+          <button class="btn btn-ghost btn-full" onclick="exportCSV()">📥 Export CSV</button>
+          <button class="btn btn-ghost btn-full" onclick="exportSessions()">📥 Export JSON</button>
+        </div>
+      </div>
+
+      <!-- SOT -->
+      <div class="card">
+        <div class="card-title">SOT – Rapports</div>
+        <div class="flex gap-8 flex-wrap">
+          <a class="btn btn-ghost btn-full" href="/sot/report.pdf" target="_blank">📄 Dernier rapport PDF</a>
+          <a class="btn btn-ghost btn-full" href="/sot/results.json" target="_blank">📊 Résultats JSON</a>
+        </div>
+      </div>
+
+      <!-- Install PWA -->
+      <div class="card" id="install-card">
+        <div class="card-title">Application</div>
+        <div class="text-sm text-muted mb-12">Installer PosturoSPS sur cet appareil pour un accès hors-ligne.</div>
+        <button class="btn btn-blue btn-full hidden" id="btn-install" onclick="installApp()">📲 Installer l'application</button>
+        <div class="text-xs text-muted">Sur iOS: utiliser Safari → <em>Partager → Sur l'écran d'accueil</em></div>
+      </div>
+
+      <!-- System -->
+      <div class="card">
+        <div class="card-title">Système</div>
+        <div class="flex gap-8 flex-wrap">
+          <a class="btn btn-ghost btn-full" href="/" target="_blank">🔧 Interface classique</a>
+          <a class="btn btn-ghost btn-full" href="/exercices" target="_blank">🏋️ UI Exercices (legacy)</a>
+          <button class="btn btn-red btn-full" onclick="shutdownPi()">⏻ Éteindre le Raspberry Pi</button>
+        </div>
+      </div>
+
+      <!-- App info -->
+      <div class="text-center text-xs text-muted" style="margin-top:24px;padding-bottom:8px;">
+        PosturoSPS v3.0 · Plateforme stabilométrique<br/>
+        <span id="sw-status"></span>
+      </div>
+
+    </div><!-- /page-more -->
+
+  </div><!-- /main-scroll -->
+
+  <!-- LIVE EXERCISE FLOATING PANEL -->
+  <div id="ex-live-panel">
+    <div class="ex-live-name">Exercice en cours</div>
+    <div class="ex-live-score" id="ex-live-score-main">–</div>
+    <button class="btn btn-red btn-sm" onclick="stopEx()">■</button>
+  </div>
+
+  <!-- TAB BAR -->
+  <nav id="tabbar">
+    <button class="tab-btn active" id="tab-home" onclick="navigate('home')">
+      <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M2.25 12l8.954-8.955c.44-.439 1.152-.439 1.591 0L21.75 12M4.5 9.75v10.125c0 .621.504 1.125 1.125 1.125H9.75v-4.875c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125V21h4.125c.621 0 1.125-.504 1.125-1.125V9.75M8.25 21h8.25"/></svg>
+      Accueil
+    </button>
+    <button class="tab-btn" id="tab-sot" onclick="navigate('sot')">
+      <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+      SOT
+    </button>
+    <button class="tab-btn" id="tab-exercises" onclick="navigate('exercises')">
+      <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.348a1.125 1.125 0 010 1.971l-11.54 6.347a1.125 1.125 0 01-1.667-.985V5.653z"/></svg>
+      Exercices
+    </button>
+    <button class="tab-btn" id="tab-patients" onclick="navigate('patients')">
+      <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 6a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0zM4.501 20.118a7.5 7.5 0 0114.998 0A17.933 17.933 0 0112 21.75c-2.676 0-5.216-.584-7.499-1.632z"/></svg>
+      Patients
+    </button>
+    <button class="tab-btn" id="tab-more" onclick="navigate('more')">
+      <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5"/></svg>
+      Plus
+    </button>
+  </nav>
+
+</div><!-- /app -->
+
+<!-- TOAST -->
+<div id="toast"></div>
+
+<!-- MODAL -->
+<div id="modal-overlay">
+  <div id="modal-box"></div>
+</div>
+
+<!-- Extra runtime JS for pages that need it -->
+<script>
+// Status polling enhancement – also update home COP canvas
+const _origUpdateStatus = window.updateStatusBar;
+setInterval(async () => {
+  const s = await (async () => { try { const r = await fetch('/status'); return r.json(); } catch { return null; } })();
+  if (!s) return;
+  // Home page COP
+  if (typeof drawCOPMini === 'function') {
+    drawCOPMini('home-cop-canvas', s.cop_x_cm, s.cop_y_cm);
+    drawCOPMini('sot-cop-canvas', s.cop_x_cm, s.cop_y_cm);
+    drawCOPMini('ex-cop-canvas', s.cop_x_cm, s.cop_y_cm);
+  }
+  const xEl = document.getElementById('home-cop-x');
+  const yEl = document.getElementById('home-cop-y');
+  const cEl = document.getElementById('home-cop-cmd');
+  const sxEl = document.getElementById('sot-cop-x');
+  const syEl = document.getElementById('sot-cop-y');
+  const exXEl = document.getElementById('ex-cop-x');
+  const exYEl = document.getElementById('ex-cop-y');
+  if (xEl) xEl.textContent = s.cop_x_cm.toFixed(2);
+  if (yEl) yEl.textContent = s.cop_y_cm.toFixed(2);
+  if (cEl) cEl.textContent = s.cmd.toFixed(3);
+  if (sxEl) sxEl.textContent = s.cop_x_cm.toFixed(2);
+  if (syEl) syEl.textContent = s.cop_y_cm.toFixed(2);
+  if (exXEl) exXEl.textContent = s.cop_x_cm.toFixed(2);
+  if (exYEl) exYEl.textContent = s.cop_y_cm.toFixed(2);
+}, 300);
+
+// SOT tare/center helpers
+async function doSOTTare() {
+  const btn = event.target;
+  btn.disabled = true; btn.textContent = '⏳...';
+  await fetch('/sot/tare');
+  btn.disabled = false; btn.textContent = '1) TARE ✅';
+  document.getElementById('sot-tare-st').className = 'badge badge-green';
+  document.getElementById('sot-tare-st').textContent = 'Tare OK';
+  if (typeof toast === 'function') toast('✅ Tare OK', 'ok');
+}
+async function doSOTCenter() {
+  const btn = event.target;
+  btn.disabled = true; btn.textContent = '⏳ HOME...';
+  if (typeof toast === 'function') toast('Centrage en cours (10s)...', 'ok', 12000);
+  const r = await fetch('/sot/center');
+  const t = await r.text();
+  btn.disabled = false;
+  if (t.includes('ERROR')) {
+    btn.textContent = '2) CENTRAGE';
+    if (typeof toast === 'function') toast('❌ Pas de charge détectée', 'err');
+  } else {
+    btn.textContent = '2) CENTRAGE ✅';
+    document.getElementById('sot-center-st').className = 'badge badge-green';
+    document.getElementById('sot-center-st').textContent = 'Centre OK';
+    if (typeof toast === 'function') toast('✅ Centrage OK', 'ok');
+  }
+}
+
+// SW status
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.ready.then(reg => {
+    const el = document.getElementById('sw-status');
+    if (el) el.textContent = 'Mode hors-ligne disponible ✅';
+  });
+}
+</script>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
