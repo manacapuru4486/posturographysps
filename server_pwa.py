@@ -286,104 +286,59 @@ def mpv_play_route():
     return _json_resp({"ok": ok, "file": filename})
 
 # =========================================================
-# OVERRIDE exercise12 to use MPV for video
+# EXERCISE 12 – video via Chromium (original behaviour)
+# + scan videos/ directory so new files are picked up
 # =========================================================
-_orig_ex12_start = _srv.exercise12_start
-_orig_ex12_stop  = _srv.exercise12_stop
+# Patch list_static_videos so ex12 also sees videos/ dir
+_srv.list_static_videos = list_all_videos
 
-def _ex12_start_mpv():
-    """Ex12 start: platform control same as original, video via MPV."""
-    global _mpv_proc
+# NOTE: ex12 start/stop are NOT overridden – use original Chromium-based playback.
 
-    # Stop any running exercise
-    _srv.exercise12_stop()
-    _srv.exercise12_running = True
-
-    # Build playlist (from both dirs)
-    playlist = list_all_videos()
-    if not playlist:
-        playlist = [_srv.exercise12_mode.get("video_file", "voiture1.mp4")]
-    vf = _srv.exercise12_mode.get("video_file", playlist[0])
-    if vf not in playlist:
-        vf = playlist[0]
-    _srv.exercise12_mode["video_file"] = vf
-    _srv.exercise12_video_index = playlist.index(vf) if vf in playlist else 0
-
-    # Platform control
-    platform = _srv.exercise12_mode.get("platform", "fixed")
-    if platform == "fixed":
-        _srv.send_to_esp = False
-        _srv.control_source = "cop"
-        _srv.esp_send("STOP")
-    elif platform == "auto":
-        _srv.send_to_esp = True
-        _srv.control_source = "cop"
-        _srv.esp_send("ARM:1")
-        time.sleep(0.1)
-        _srv.esp_send("AUTO:1")
-    elif platform in ["sinus", "ramp", "impulses"]:
-        _srv.send_to_esp = True
-        _srv.control_source = "exercise12"
-        _srv.esp_send("ARM:1")
-        time.sleep(0.1)
-        _srv.esp_send("AUTO:1")
-        if platform == "sinus":
-            threading.Thread(target=_srv.exercise12_loop_sinus, daemon=True).start()
-        elif platform == "ramp":
-            threading.Thread(target=_srv.exercise12_loop_ramp, daemon=True).start()
-        else:
-            threading.Thread(target=_srv.exercise12_loop_impulses, daemon=True).start()
-
-    # VIDEO: use MPV if video_on == "on"
-    if _srv.exercise12_mode.get("video_on", "on") == "on":
-        p = video_path(vf)
-        _srv.set_hdmi(mode="black", title="Ex 12 – Plateforme + Vidéo")
-        if p:
-            _mpv_play(p, loop=True)
-            # Playlist loop in background
-            if (_srv.exercise12_mode.get("video_mode", "single") == "playlist"
-                    and len(playlist) > 1):
-                threading.Thread(
-                    target=_ex12_mpv_playlist_loop,
-                    args=(playlist,), daemon=True
-                ).start()
-        else:
-            print(f"[EX12] Video not found: {vf}")
-    else:
-        _srv.set_hdmi(mode="black", title="Ex 12 – Plateforme")
-
-def _ex12_stop_mpv():
-    """Ex12 stop: stop platform + MPV."""
-    _srv.exercise12_running = False
-    _srv.send_to_esp = False
-    _srv.control_source = "cop"
-    _srv.esp_send("STOP")
-    _srv.set_hdmi(mode="off")
-    _mpv_stop()
-
-def _ex12_mpv_playlist_loop(playlist):
-    """Cycle through playlist files via MPV."""
+# Patch ensure_chromium to use GPU/hardware-decode flags for smoother video
+def _ensure_chromium_optimized():
+    """Launch Chromium with hardware-acceleration flags for smoother video."""
+    if _srv.opto_process is not None and _srv.opto_process.poll() is None:
+        return  # already running
+    env = os.environ.copy()
+    env["DISPLAY"] = ":0"
     try:
-        interval = max(5, int(_srv.exercise12_mode.get("video_interval", 20)))
-    except Exception:
-        interval = 20
-    idx = _srv.exercise12_video_index
-    while _srv.exercise12_running:
-        t0 = time.time()
-        while _srv.exercise12_running and (time.time() - t0 < interval):
-            time.sleep(0.3)
-        if not _srv.exercise12_running:
-            break
-        idx = (idx + 1) % len(playlist)
-        _srv.exercise12_video_index = idx
-        _srv.exercise12_mode["video_file"] = playlist[idx]
-        p = video_path(playlist[idx])
-        if p:
-            _mpv_play(p, loop=True)
+        _srv.opto_process = subprocess.Popen([
+            "chromium",
+            "--kiosk", "--noerrdialogs", "--disable-infobars",
+            "--disable-restore-session-state", "--no-first-run",
+            "--enable-gpu-rasterization",     # hardware raster
+            "--enable-zero-copy",             # zero-copy texture upload
+            "--use-gl=egl",                   # use EGL (better on Pi)
+            "--ignore-gpu-blocklist",         # ignore GPU block list
+            "--disable-software-rasterizer",
+            "http://localhost:5000/hdmi"
+        ], env=env)
+    except FileNotFoundError:
+        # Try chromium-browser alias
+        _srv.opto_process = subprocess.Popen([
+            "chromium-browser",
+            "--kiosk", "--noerrdialogs", "--disable-infobars",
+            "--enable-gpu-rasterization", "--enable-zero-copy", "--use-gl=egl",
+            "--ignore-gpu-blocklist", "--disable-software-rasterizer",
+            "http://localhost:5000/hdmi"
+        ], env=env)
 
-# Patch the module-level functions so Flask routes call these
-_srv.exercise12_start = _ex12_start_mpv
-_srv.exercise12_stop  = _ex12_stop_mpv
+_srv.ensure_chromium = _ensure_chromium_optimized
+
+# =========================================================
+# SOT – robust start: wrap ensure_chromium in try/except
+# so logging always starts even without a display / Chromium
+# =========================================================
+def _patched_sot_start(c):
+    try:
+        _srv.ensure_chromium()
+    except Exception as e:
+        print(f"[SOT] Chromium launch skipped ({e}) – continuing with logging only")
+    _srv.start_log()
+    _srv.start_condition(c)
+    return f"STARTED CONDITION {c}\n"
+
+app.view_functions["sot_start"] = _patched_sot_start
 
 # =========================================================
 # SOT PDF – Clean rebuild with proper French encoding
@@ -1074,6 +1029,17 @@ _ex13_mode = {
 }
 _ex13_lock = threading.Lock()
 
+def _ex13_cop_loop():
+    """Continuously push COP X (normalized -1..1) into hdmi_state cursor_x for Pong."""
+    while _ex13_running:
+        try:
+            # Same normalisation as ex8-11: cop_x_f / 4.0 cm→norm
+            cx = max(-1.0, min(1.0, _srv.cop_x_f / 4.0))
+            _srv.hdmi_state["cursor_x"] = cx
+        except Exception:
+            pass
+        time.sleep(0.02)   # 50 Hz
+
 PONG_DIFFICULTY = {
     "beginner": {"paddle_w": 0.30, "ball_speed": 0.012, "ai_speed": 0.010, "ai_error": 0.08},
     "medium":   {"paddle_w": 0.18, "ball_speed": 0.020, "ai_speed": 0.016, "ai_error": 0.04},
@@ -1118,6 +1084,8 @@ def ex13_start():
         "pong_score_player": 0,
         "pong_score_ai":     0,
     })
+    # Start COP→cursor_x feed loop
+    threading.Thread(target=_ex13_cop_loop, daemon=True).start()
     return _json_resp({"ok": True, "difficulty": diff})
 
 @app.route("/exercise13/stop", methods=["GET", "POST"])

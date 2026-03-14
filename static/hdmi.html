@@ -1,9 +1,15 @@
 <!DOCTYPE html>
 <html>
-<head><meta charset="utf-8"/><title>HDMI – PosturoSPS</title></head>
-<body style="margin:0;padding:0;overflow:hidden;background:#000;cursor:none">
-<video id="vbg" playsinline muted autoplay loop
-  style="position:fixed;inset:0;width:100vw;height:100vh;object-fit:cover;background:#000;display:none"></video>
+<head>
+  <meta charset="utf-8"/><title>HDMI – PosturoSPS</title>
+  <style>body{margin:0;padding:0;overflow:hidden;background:#000;cursor:none}</style>
+</head>
+<body>
+<!-- preload + disablepictureinpicture for smooth video on Pi -->
+<video id="vbg" playsinline muted autoplay loop preload="auto"
+  disablepictureinpicture x-webkit-airplay="deny"
+  style="position:fixed;inset:0;width:100vw;height:100vh;object-fit:cover;background:#000;display:none;
+         will-change:transform;transform:translateZ(0)"></video>
 <canvas id="c" style="position:fixed;inset:0;display:block"></canvas>
 <script>
 // =====================================================================
@@ -814,8 +820,22 @@ draw();
 function updateVideo(){
   if(mode!=='video'){vbg.style.display='none';return;}
   vbg.style.display='block';
-  var src='/static/'+video_file;
-  if(src!==active_video_src){active_video_src=src;vbg.src=src;try{vbg.load();}catch(e){}}
+  // Try videos/ dir first, then static/ fallback
+  var dirs = ['/videos/', '/static/'];
+  var newSrc = dirs[0] + video_file;
+  // Only change src if needed (avoid reload glitch)
+  if(newSrc !== active_video_src){
+    active_video_src = newSrc;
+    vbg.src = newSrc;
+    vbg.onerror = function(){
+      // Fallback to static/
+      if(vbg.src.indexOf('/videos/')!==-1){
+        vbg.src = '/static/' + video_file;
+        active_video_src = vbg.src;
+      }
+    };
+    vbg.load();
+  }
   if(vbg.paused){var p=vbg.play();if(p&&p.catch)p.catch(function(){});}
 }
 
