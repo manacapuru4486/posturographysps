@@ -385,7 +385,11 @@ def _ensure_chromium_safe():
         "--disable-restore-session-state", "--no-first-run",
         "--enable-gpu-rasterization", "--enable-zero-copy",
         "--use-gl=egl", "--ignore-gpu-blocklist",
-        "--disable-software-rasterizer",
+        # NOTE: do NOT add --disable-software-rasterizer – if EGL/GPU is
+        # unavailable Chromium needs the software fallback, otherwise
+        # rendering becomes broken / extremely slow.
+        "--enable-accelerated-video-decode",
+        "--enable-features=VaapiVideoDecoder",
         "http://localhost:5000/hdmi"
     ]
     for binary in ["chromium", "chromium-browser"]:
