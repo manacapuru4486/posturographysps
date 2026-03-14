@@ -468,9 +468,34 @@ function showExConfig(exId) {
   // Post-render hooks
   if (exId === 'ex12') loadVideoListIntoSelect();
   syncPlatformMotionBox(exId);
+  syncOptoFields();
+}
+
+function syncOptoFields() {
+  const sc = document.getElementById('cfg-screen');
+  const isOpto = sc && sc.value === 'opto';
+  document.querySelectorAll('.opto-only').forEach(el => {
+    el.style.display = isOpto ? '' : 'none';
+  });
 }
 
 function buildExConfigHTML(exId, ex) {
+  // Shared opto direction + speed controls (shown only when screen = opto)
+  const optoControls = `
+    <div class="field opto-only" style="display:none">
+      <label>Direction opto</label>
+      <select id="cfg-opto-dir">
+        <option value="right">→ Droite</option>
+        <option value="left">← Gauche</option>
+        <option value="up">↑ Haut</option>
+        <option value="down">↓ Bas</option>
+      </select>
+    </div>
+    <div class="field opto-only" style="display:none">
+      <label>Vitesse opto (1-30)</label>
+      <input id="cfg-opto-speed" type="number" min="1" max="30" value="6"/>
+    </div>`;
+
   const motionOptions = `
     <div class="field">
       <label>Amplitude plateforme</label>
@@ -525,11 +550,12 @@ function buildExConfigHTML(exId, ex) {
       </div>
       <div class="field">
         <label>Écran HDMI</label>
-        <select id="cfg-screen">
+        <select id="cfg-screen" onchange="syncOptoFields()">
           <option value="black">Noir</option>
           <option value="opto">Optocinetique</option>
         </select>
-      </div>`;
+      </div>
+      ${optoControls}`;
   } else if (exId === 'ex2') {
     specific = `
       <div class="field"><label>Amplitude</label>
@@ -539,8 +565,9 @@ function buildExConfigHTML(exId, ex) {
         <select id="cfg-speed"><option value="low">Lent</option><option value="medium" selected>Moyen</option><option value="high">Rapide</option></select>
       </div>
       <div class="field"><label>Écran HDMI</label>
-        <select id="cfg-screen"><option value="black">Noir</option><option value="opto">Optocinetique</option></select>
-      </div>`;
+        <select id="cfg-screen" onchange="syncOptoFields()"><option value="black">Noir</option><option value="opto">Optocinetique</option></select>
+      </div>
+      ${optoControls}`;
   } else if (exId === 'ex3') {
     specific = `
       <div class="field"><label>Amplitude</label>
@@ -551,7 +578,11 @@ function buildExConfigHTML(exId, ex) {
       </div>
       <div class="field"><label>Durée (s)</label>
         <input id="cfg-duration" type="number" min="5" max="120" value="30"/>
-      </div>`;
+      </div>
+      <div class="field"><label>Écran HDMI</label>
+        <select id="cfg-screen" onchange="syncOptoFields()"><option value="black">Noir</option><option value="opto">Optocinetique</option></select>
+      </div>
+      ${optoControls}`;
   } else if (exId === 'ex4') {
     specific = `
       <div class="field"><label>Amplitude</label>
@@ -568,7 +599,11 @@ function buildExConfigHTML(exId, ex) {
       </div>
       <div class="field"><label>Durée impulsion (ms)</label>
         <input id="cfg-pulse-ms" type="number" min="200" max="3000" value="900"/>
-      </div>`;
+      </div>
+      <div class="field"><label>Écran HDMI</label>
+        <select id="cfg-screen" onchange="syncOptoFields()"><option value="black">Noir</option><option value="opto">Optocinetique</option></select>
+      </div>
+      ${optoControls}`;
   } else if (exId === 'ex5') {
     specific = platformField + `
       <div class="field"><label>Mode points VOR</label>
@@ -717,6 +752,12 @@ function getExParams(exId) {
   if (g('cfg-amplitude')) p.amplitude = g('cfg-amplitude');
   if (g('cfg-speed')) p.speed = g('cfg-speed');
   if (g('cfg-screen')) p.screen = g('cfg-screen');
+  if (g('cfg-opto-dir')) p.direction = g('cfg-opto-dir');
+  // ex1/set uses 'speed' for opto speed; ex2-4 use 'opto_speed'
+  if (g('cfg-opto-speed')) {
+    if (exId === 'ex1') p.speed = g('cfg-opto-speed');
+    else p.opto_speed = g('cfg-opto-speed');
+  }
   if (g('cfg-duration')) p.duration = g('cfg-duration');
   if (g('cfg-gap-min')) p.gap_min = g('cfg-gap-min');
   if (g('cfg-gap-max')) p.gap_max = g('cfg-gap-max');
