@@ -403,47 +403,174 @@ def _ensure_chromium_safe():
 _srv.ensure_chromium = _ensure_chromium_safe
 
 # =========================================================
-# SOT – robust start/stop/next overrides
-# Key fixes:
-#   1. ensure_chromium never throws (patched above)
-#   2. TOTAL_MIN set to -1 during recording so logging
-#      always runs regardless of sensor/tare state
+# SOT – Robust dedicated logging thread
 # =========================================================
+# Root-cause: the control loop has TWO early-continue guards
+# that silently skip the logging section:
+#   1. if (not tare_ready) or (not offset_ready): continue
+#   2. if total < TOTAL_MIN: continue
+# Both are bypassed by our dedicated thread which reads
+# directly from _srv.cop_x_f / cop_y_f / latest – completely
+# independent from the control loop.
+# =========================================================
+
 _sot_orig_total_min = _srv.TOTAL_MIN
+_sot_bg_stop  = threading.Event()
+_sot_bg_path  = None   # path of the CSV being recorded
+
+
+def _sot_bg_logger(path, stop_evt):
+    """Dedicated 50 Hz SOT logger – writes directly from _srv globals.
+    Completely bypasses the control-loop's logging section."""
+    import csv as _csv
+    rows_written = 0
+    try:
+        with open(path, "w", newline="") as f:
+            w = _csv.writer(f)
+            w.writerow(["time", "condition", "cop_x_cm", "cop_y_cm",
+                        "total", "cmd", "esp_pos", "blocked"])
+            while not stop_evt.is_set():
+                try:
+                    t    = time.time()
+                    cond = _srv.current_condition
+                    # Read COP directly (set even when total < TOTAL_MIN via EMA decay)
+                    cx   = float(_srv.cop_x_f)
+                    cy   = float(_srv.cop_y_f)
+                    with _srv.lock:
+                        tot = float(_srv.latest.get("total", 0.0))
+                        cmd = float(_srv.latest.get("cmd",   0.0))
+                    esp  = _srv.esp_pos
+                    w.writerow([round(t, 4), cond,
+                                round(cx, 4), round(cy, 4),
+                                round(tot, 6), round(cmd, 4),
+                                esp, ""])
+                    rows_written += 1
+                    if rows_written % 250 == 0:   # flush every 5 s
+                        f.flush()
+                except Exception as _e:
+                    print(f"[SOT LOG] row error: {_e}")
+                time.sleep(0.02)   # 50 Hz
+            f.flush()
+        print(f"[SOT LOG] Finished – {rows_written} rows → {path}")
+    except Exception as e:
+        print(f"[SOT LOG] fatal: {e}")
+
+
+def _sot_bg_start(path):
+    global _sot_bg_path
+    _sot_bg_path = path
+    _sot_bg_stop.clear()
+    t = threading.Thread(target=_sot_bg_logger,
+                         args=(path, _sot_bg_stop),
+                         daemon=True, name="sot-bg-log")
+    t.start()
+
+
+def _sot_bg_finish():
+    """Stop the background logger and wait up to 3 s for it to flush."""
+    _sot_bg_stop.set()
+    deadline = time.time() + 3.0
+    while time.time() < deadline:
+        if not any(th.name == "sot-bg-log" for th in threading.enumerate()):
+            break
+        time.sleep(0.05)
+
+
+# ---- SOT route overrides ----
 
 def _patched_sot_start(c):
-    # Lower TOTAL_MIN so the COP loop always reaches the logging section
-    _srv.TOTAL_MIN = -1.0
-    _srv.start_log()
-    _srv.start_condition(c)  # ensure_chromium inside is now safe (never throws)
-    print(f"[SOT] Started condition {c}, logging={_srv.logging_active}, "
-          f"current_condition={_srv.current_condition}")
+    _srv.TOTAL_MIN = -1.0   # extra: bypass control-loop TOTAL_MIN guard too
+
+    # Ensure calibration flags are set so the control loop also computes COP
+    if not _srv.tare_ready:
+        print("[SOT] tare not done – running auto-tare now")
+        _srv.tare()
+    if not _srv.offset_ready:
+        print("[SOT] center not done – assuming (0,0) offset")
+        _srv.offset_x_cm = 0.0
+        _srv.offset_y_cm = 0.0
+        _srv.offset_ready = True
+        with _srv.lock:
+            _srv.latest["offset_ready"] = True
+
+    # Open the log file ourselves (do NOT rely on control-loop start_log)
+    os.makedirs("logs", exist_ok=True)
+    log_path = datetime.now().strftime("logs/sot_%Y%m%d_%H%M%S.csv")
+    _srv.current_log_path = log_path   # finalize_sot_and_analyze reads this
+    _srv.logging_active   = True       # must be True for finalize to proceed
+    _srv.log_file         = None       # prevent control loop from writing
+    _srv.log_writer       = None       # (if log_writer is None, control loop skips write)
+
+    # Start dedicated background logger
+    _sot_bg_start(log_path)
+
+    _srv.start_condition(c)
+    print(f"[SOT] Condition {c} started – logging to {log_path} "
+          f"(tare_ready={_srv.tare_ready}, offset_ready={_srv.offset_ready})")
     return f"STARTED CONDITION {c}\n"
+
 
 def _patched_sot_stop():
     _srv.stop_condition()
-    _srv.TOTAL_MIN = _sot_orig_total_min   # restore safety threshold
+    _srv.TOTAL_MIN = _sot_orig_total_min
+    _sot_bg_finish()           # wait for last rows + flush
+    _srv.logging_active = False
     _srv.finalize_sot_and_analyze()
     return "STOP\n"
+
 
 def _patched_sot_next():
     _srv.sot_condition += 1
     if _srv.sot_condition > 6:
-        _srv.TOTAL_MIN = _sot_orig_total_min  # restore on finish
+        _srv.TOTAL_MIN = _sot_orig_total_min
+        _srv.stop_condition()
+        _sot_bg_finish()
+        _srv.logging_active = False
         _srv.finalize_sot_and_analyze()
         return "SOT FINISHED\n"
     _srv.stop_condition()
-    _srv.start_condition(_srv.sot_condition)
+    _srv.start_condition(_srv.sot_condition)   # updates current_condition
     return f"NEXT: CONDITION {_srv.sot_condition}\n"
 
+
 def _patched_sot_restart():
+    # Same condition – keep logging to the same file, just reset platform
     _srv.start_condition(_srv.sot_condition)
     return f"RESTART CONDITION {_srv.sot_condition}\n"
+
 
 app.view_functions["sot_start"]   = _patched_sot_start
 app.view_functions["sot_stop"]    = _patched_sot_stop
 app.view_functions["sot_next"]    = _patched_sot_next
 app.view_functions["sot_restart"] = _patched_sot_restart
+
+
+@app.route("/sot/state")
+def sot_state_debug():
+    """Real-time diagnostic endpoint – shows all SOT-relevant state."""
+    try:
+        log_rows = 0
+        if _sot_bg_path and os.path.isfile(_sot_bg_path):
+            with open(_sot_bg_path) as _f:
+                log_rows = max(0, sum(1 for _ in _f) - 1)  # exclude header
+    except Exception:
+        log_rows = -1
+    return _json_resp({
+        "tare_ready":       _srv.tare_ready,
+        "offset_ready":     _srv.offset_ready,
+        "logging_active":   _srv.logging_active,
+        "log_writer_ok":    _srv.log_writer is not None,
+        "current_log_path": _srv.current_log_path,
+        "bg_log_path":      _sot_bg_path,
+        "bg_log_running":   any(t.name == "sot-bg-log" for t in threading.enumerate()),
+        "bg_log_rows":      log_rows,
+        "TOTAL_MIN":        _srv.TOTAL_MIN,
+        "current_condition": _srv.current_condition,
+        "sot_condition":    _srv.sot_condition,
+        "cop_x_f":          round(_srv.cop_x_f, 3),
+        "cop_y_f":          round(_srv.cop_y_f, 3),
+        "total":            round(_srv.latest.get("total", 0.0), 6),
+    })
 
 # =========================================================
 # SOT PDF – Clean rebuild with proper French encoding
