@@ -178,6 +178,85 @@ def videos_delete(filename):
     os.remove(p)
     return _json_resp({"ok": True, "videos": list_all_videos()})
 
+# ---- Video transcode (ffmpeg H.264 720p optimised for Pi) ----
+_transcode_jobs = {}   # {job_id: {status, src, dst, progress, error}}
+_transcode_lock = threading.Lock()
+
+def _run_transcode(job_id, src_path, dst_path):
+    """Background ffmpeg transcode thread."""
+    with _transcode_lock:
+        _transcode_jobs[job_id]["status"] = "running"
+    try:
+        cmd = [
+            "ffmpeg", "-y", "-i", src_path,
+            "-vcodec", "h264", "-profile:v", "baseline", "-level", "3.0",
+            "-vf", "scale=1280:720",
+            "-b:v", "1500k", "-maxrate", "1500k", "-bufsize", "3000k",
+            "-acodec", "aac", "-b:a", "128k",
+            "-movflags", "+faststart",
+            dst_path
+        ]
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        if proc.returncode == 0:
+            with _transcode_lock:
+                _transcode_jobs[job_id]["status"] = "done"
+                _transcode_jobs[job_id]["output"] = os.path.basename(dst_path)
+        else:
+            with _transcode_lock:
+                _transcode_jobs[job_id]["status"] = "error"
+                _transcode_jobs[job_id]["error"] = proc.stderr[-500:] if proc.stderr else "unknown"
+    except subprocess.TimeoutExpired:
+        with _transcode_lock:
+            _transcode_jobs[job_id]["status"] = "error"
+            _transcode_jobs[job_id]["error"] = "timeout (>10 min)"
+    except FileNotFoundError:
+        with _transcode_lock:
+            _transcode_jobs[job_id]["status"] = "error"
+            _transcode_jobs[job_id]["error"] = "ffmpeg not found – sudo apt install ffmpeg"
+    except Exception as e:
+        with _transcode_lock:
+            _transcode_jobs[job_id]["status"] = "error"
+            _transcode_jobs[job_id]["error"] = str(e)
+
+@app.route("/videos/transcode", methods=["POST"])
+def videos_transcode():
+    """Start ffmpeg transcode of a video. Body: {source, output_name}"""
+    body = _body()
+    source = os.path.basename(body.get("source", ""))
+    output_name = os.path.basename(body.get("output_name", ""))
+    if not source:
+        return _json_resp({"error": "source required"}, 400)
+    # Find source file
+    src_path = video_path(source)
+    if not src_path:
+        return _json_resp({"error": f"source not found: {source}"}, 404)
+    # Build output filename
+    if not output_name:
+        base = os.path.splitext(source)[0]
+        output_name = f"{base}_720p.mp4"
+    if not output_name.lower().endswith(".mp4"):
+        output_name += ".mp4"
+    dst_path = os.path.join(VIDEOS_DIR, output_name)
+    # Check for already running job on same source
+    with _transcode_lock:
+        for jid, j in _transcode_jobs.items():
+            if j.get("src") == src_path and j.get("status") == "running":
+                return _json_resp({"error": "already transcoding", "job_id": jid})
+    job_id = f"tc_{int(time.time()*1000)}"
+    with _transcode_lock:
+        _transcode_jobs[job_id] = {
+            "status": "pending", "src": src_path,
+            "dst": dst_path, "source": source, "output_name": output_name
+        }
+    threading.Thread(target=_run_transcode, args=(job_id, src_path, dst_path),
+                     daemon=True).start()
+    return _json_resp({"ok": True, "job_id": job_id, "output_name": output_name})
+
+@app.route("/videos/transcode-status")
+def videos_transcode_status():
+    with _transcode_lock:
+        return _json_resp(dict(_transcode_jobs))
+
 # =========================================================
 # MPV PLAYER (for Ex12 video on the Pi screen)
 # =========================================================
@@ -294,51 +373,77 @@ _srv.list_static_videos = list_all_videos
 
 # NOTE: ex12 start/stop are NOT overridden – use original Chromium-based playback.
 
-# Patch ensure_chromium to use GPU/hardware-decode flags for smoother video
-def _ensure_chromium_optimized():
-    """Launch Chromium with hardware-acceleration flags for smoother video."""
+# Patch ensure_chromium: GPU flags + NEVER THROW (critical for SOT stability)
+def _ensure_chromium_safe():
+    """Launch Chromium with GPU flags. Never raises – errors are logged only."""
     if _srv.opto_process is not None and _srv.opto_process.poll() is None:
         return  # already running
     env = os.environ.copy()
     env["DISPLAY"] = ":0"
-    try:
-        _srv.opto_process = subprocess.Popen([
-            "chromium",
-            "--kiosk", "--noerrdialogs", "--disable-infobars",
-            "--disable-restore-session-state", "--no-first-run",
-            "--enable-gpu-rasterization",     # hardware raster
-            "--enable-zero-copy",             # zero-copy texture upload
-            "--use-gl=egl",                   # use EGL (better on Pi)
-            "--ignore-gpu-blocklist",         # ignore GPU block list
-            "--disable-software-rasterizer",
-            "http://localhost:5000/hdmi"
-        ], env=env)
-    except FileNotFoundError:
-        # Try chromium-browser alias
-        _srv.opto_process = subprocess.Popen([
-            "chromium-browser",
-            "--kiosk", "--noerrdialogs", "--disable-infobars",
-            "--enable-gpu-rasterization", "--enable-zero-copy", "--use-gl=egl",
-            "--ignore-gpu-blocklist", "--disable-software-rasterizer",
-            "http://localhost:5000/hdmi"
-        ], env=env)
+    gpu_flags = [
+        "--kiosk", "--noerrdialogs", "--disable-infobars",
+        "--disable-restore-session-state", "--no-first-run",
+        "--enable-gpu-rasterization", "--enable-zero-copy",
+        "--use-gl=egl", "--ignore-gpu-blocklist",
+        "--disable-software-rasterizer",
+        "http://localhost:5000/hdmi"
+    ]
+    for binary in ["chromium", "chromium-browser"]:
+        try:
+            _srv.opto_process = subprocess.Popen([binary] + gpu_flags, env=env)
+            print(f"[HDMI] Chromium launched via '{binary}'")
+            return
+        except FileNotFoundError:
+            continue
+        except Exception as e:
+            print(f"[HDMI] {binary} launch error: {e}")
+            return
+    print("[HDMI] Chromium not found – HDMI display unavailable")
 
-_srv.ensure_chromium = _ensure_chromium_optimized
+_srv.ensure_chromium = _ensure_chromium_safe
 
 # =========================================================
-# SOT – robust start: wrap ensure_chromium in try/except
-# so logging always starts even without a display / Chromium
+# SOT – robust start/stop/next overrides
+# Key fixes:
+#   1. ensure_chromium never throws (patched above)
+#   2. TOTAL_MIN set to -1 during recording so logging
+#      always runs regardless of sensor/tare state
 # =========================================================
+_sot_orig_total_min = _srv.TOTAL_MIN
+
 def _patched_sot_start(c):
-    try:
-        _srv.ensure_chromium()
-    except Exception as e:
-        print(f"[SOT] Chromium launch skipped ({e}) – continuing with logging only")
+    # Lower TOTAL_MIN so the COP loop always reaches the logging section
+    _srv.TOTAL_MIN = -1.0
     _srv.start_log()
-    _srv.start_condition(c)
+    _srv.start_condition(c)  # ensure_chromium inside is now safe (never throws)
+    print(f"[SOT] Started condition {c}, logging={_srv.logging_active}, "
+          f"current_condition={_srv.current_condition}")
     return f"STARTED CONDITION {c}\n"
 
-app.view_functions["sot_start"] = _patched_sot_start
+def _patched_sot_stop():
+    _srv.stop_condition()
+    _srv.TOTAL_MIN = _sot_orig_total_min   # restore safety threshold
+    _srv.finalize_sot_and_analyze()
+    return "STOP\n"
+
+def _patched_sot_next():
+    _srv.sot_condition += 1
+    if _srv.sot_condition > 6:
+        _srv.TOTAL_MIN = _sot_orig_total_min  # restore on finish
+        _srv.finalize_sot_and_analyze()
+        return "SOT FINISHED\n"
+    _srv.stop_condition()
+    _srv.start_condition(_srv.sot_condition)
+    return f"NEXT: CONDITION {_srv.sot_condition}\n"
+
+def _patched_sot_restart():
+    _srv.start_condition(_srv.sot_condition)
+    return f"RESTART CONDITION {_srv.sot_condition}\n"
+
+app.view_functions["sot_start"]   = _patched_sot_start
+app.view_functions["sot_stop"]    = _patched_sot_stop
+app.view_functions["sot_next"]    = _patched_sot_next
+app.view_functions["sot_restart"] = _patched_sot_restart
 
 # =========================================================
 # SOT PDF – Clean rebuild with proper French encoding

@@ -266,7 +266,7 @@
       <div class="card">
         <div class="card-title">Vidéos (Ex12)</div>
         <div class="text-sm text-muted mb-12">
-          Ajouter des vidéos MP4 pour l'exercice 12. Elles sont lues via MPV (plus fluide que Chromium).
+          Ajouter des vidéos MP4 pour l'exercice 12.
         </div>
         <div id="video-list-panel" class="mb-12">
           <div class="text-xs text-muted">Chargement...</div>
@@ -278,6 +278,27 @@
           </label>
         </div>
         <div id="upload-progress" class="text-sm text-muted mt-8 hidden">Upload en cours...</div>
+      </div>
+
+      <!-- VIDEO TRANSCODE -->
+      <div class="card">
+        <div class="card-title">Optimiser une vidéo (ffmpeg)</div>
+        <div class="text-sm text-muted mb-12">
+          Convertit une vidéo en H.264 720p optimisé pour le Raspberry Pi.
+        </div>
+        <div class="field mb-8">
+          <label>Vidéo source</label>
+          <select id="tc-source" class="input">
+            <option value="">— Choisir —</option>
+          </select>
+        </div>
+        <div class="field mb-8">
+          <label>Nom du fichier optimisé</label>
+          <input type="text" id="tc-output" class="input" placeholder="ex: video_720p.mp4"/>
+        </div>
+        <button class="btn btn-blue btn-full" onclick="startTranscode()">⚡ Transcodet en 720p</button>
+        <div id="tc-status" class="text-sm mt-8" style="display:none"></div>
+        <div id="tc-jobs" class="mt-8"></div>
       </div>
 
       <!-- Install PWA -->
@@ -479,11 +500,90 @@ async function testPlayVideo(filename) {
   if (typeof toast === 'function') toast(`▶ MPV: ${filename}`, 'ok');
 }
 
+// ---- VIDEO TRANSCODE ----
+var _tcPollTimer = null;
+
+async function populateTranscodeSource() {
+  const sel = document.getElementById('tc-source');
+  if (!sel) return;
+  try {
+    const r = await fetch('/videos/list');
+    const d = await r.json();
+    const vids = d.videos || [];
+    sel.innerHTML = '<option value="">— Choisir —</option>' +
+      vids.map(v => `<option value="${v}">${v}</option>`).join('');
+    // Auto-suggest output name on selection
+    sel.onchange = function() {
+      const out = document.getElementById('tc-output');
+      if (!sel.value) { out.value = ''; return; }
+      const base = sel.value.replace(/\.[^.]+$/, '');
+      out.value = base + '_720p.mp4';
+    };
+  } catch(e) {}
+}
+
+async function startTranscode() {
+  const source = document.getElementById('tc-source').value;
+  const outputName = document.getElementById('tc-output').value.trim();
+  if (!source) { if (typeof toast === 'function') toast('❌ Choisissez une vidéo source', 'err'); return; }
+  const statusEl = document.getElementById('tc-status');
+  statusEl.style.display = '';
+  statusEl.textContent = '⏳ Démarrage du transcodage...';
+  try {
+    const r = await fetch('/videos/transcode', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ source, output_name: outputName })
+    });
+    const d = await r.json();
+    if (d.ok) {
+      statusEl.textContent = `⏳ Transcodage en cours → ${d.output_name}`;
+      if (_tcPollTimer) clearInterval(_tcPollTimer);
+      _tcPollTimer = setInterval(() => pollTranscodeJobs(), 2000);
+      pollTranscodeJobs();
+    } else {
+      statusEl.textContent = '❌ ' + (d.error || 'Erreur inconnue');
+    }
+  } catch(e) {
+    statusEl.textContent = '❌ Erreur réseau';
+  }
+}
+
+async function pollTranscodeJobs() {
+  const container = document.getElementById('tc-jobs');
+  if (!container) return;
+  try {
+    const r = await fetch('/videos/transcode-status');
+    const jobs = await r.json();
+    const ids = Object.keys(jobs);
+    if (!ids.length) { container.innerHTML = ''; return; }
+    let allDone = true;
+    let html = '<div class="text-xs" style="border-top:1px solid var(--c-border);padding-top:8px;margin-top:4px">';
+    ids.slice(-5).forEach(jid => {
+      const j = jobs[jid];
+      const icon = j.status === 'done' ? '✅' : j.status === 'error' ? '❌' : '⏳';
+      const detail = j.status === 'done' ? j.output : j.status === 'error' ? (j.error || '') : 'en cours...';
+      html += `<div style="margin-bottom:4px">${icon} <b>${j.source || ''}</b> → ${j.output_name || ''} <span class="text-muted">${detail}</span></div>`;
+      if (j.status === 'running' || j.status === 'pending') allDone = false;
+    });
+    html += '</div>';
+    container.innerHTML = html;
+    if (allDone && _tcPollTimer) {
+      clearInterval(_tcPollTimer);
+      _tcPollTimer = null;
+      loadVideoListPanel();
+      populateTranscodeSource();
+    }
+  } catch(e) {}
+}
+
 // Load video list when More tab is shown
 const _origRenderMore = window.renderMore;
 window.renderMore = function() {
   if (typeof _origRenderMore === 'function') _origRenderMore();
   loadVideoListPanel();
+  populateTranscodeSource();
+  pollTranscodeJobs();
 };
 </script>
 

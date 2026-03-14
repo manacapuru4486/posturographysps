@@ -48,8 +48,8 @@ var pong = {
   bx: 0, by: 0,
   vx: 0.020, vy: 0.018,
   r: 0.025,
-  // player paddle (bottom) – x position
-  px: 0, pw: 0.18,
+  // player paddle: px = current (smoothed), pxTarget = raw COP target
+  px: 0, pxTarget: 0, pw: 0.18,
   // AI paddle (top)
   ax: 0, aw: 0.18,
   // config (from server)
@@ -89,9 +89,10 @@ function pongStep(cop_x) {
   var HALF = 0.85; // playfield half-height
   var HALF_W = 0.9; // half-width
 
-  // Player paddle follows COP X (clamp to field)
-  pong.px = Math.max(-HALF_W + pong.pw/2,
-             Math.min( HALF_W - pong.pw/2, cop_x));
+  // Player paddle: smooth EMA interpolation toward raw COP target
+  pong.pxTarget = Math.max(-HALF_W + pong.pw/2,
+                  Math.min( HALF_W - pong.pw/2, cop_x));
+  pong.px += (pong.pxTarget - pong.px) * 0.12; // EMA lerp ~60fps
 
   // AI paddle follows ball with limited speed + error
   var aiTarget = pong.bx + (Math.random()-0.5)*pong.aiError*2;
