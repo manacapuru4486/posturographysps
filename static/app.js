@@ -40,6 +40,7 @@ const EXERCISES = [
   { id: 'ex10', name: 'Parcours',                    cat: 'COP actif',    icon: '🛤️',  preset_ok: true },
   { id: 'ex11', name: 'Labyrinthe',                  cat: 'COP actif',    icon: '🌀',  preset_ok: true },
   { id: 'ex12', name: 'Plateforme + Vidéo',          cat: 'Distraction',  icon: '🎬',  preset_ok: true },
+  { id: 'ex13', name: 'Pong COP',                    cat: 'COP actif',    icon: '🏓',  preset_ok: true },
 ];
 
 const SOT_CONDITIONS = {
@@ -613,6 +614,20 @@ function buildExConfigHTML(exId, ex) {
       ${difficultyField}`;
   } else if (exId === 'ex11') {
     specific = platformField + difficultyField;
+  } else if (exId === 'ex13') {
+    specific = `
+      <div class="field"><label>Niveau</label>
+        <select id="cfg-pong-difficulty">
+          <option value="beginner">Débutant – grande barre, IA facile</option>
+          <option value="medium" selected>Moyen – barre standard, IA normale</option>
+          <option value="hard">Difficile – petite barre, IA rapide</option>
+        </select>
+      </div>
+      ${platformField}
+      <div class="info-box mt-8" style="background:rgba(59,130,246,0.08);border:1px solid rgba(59,130,246,0.2);border-radius:8px;padding:10px;font-size:13px;color:#93c5fd;">
+        🏓 Déplacez votre poids <b>gauche/droite</b> pour contrôler la raquette.<br>
+        L'adversaire (IA) contrôle la raquette du haut. <b>Premier à 10 points gagne.</b>
+      </div>`;
   } else if (exId === 'ex12') {
     specific = platformField + `
       <div class="field"><label>Vidéo</label>
@@ -720,6 +735,7 @@ function getExParams(exId) {
   if (g('cfg-video-mode')) p.video_mode = g('cfg-video-mode');
   if (g('cfg-video-file')) p.video_file = g('cfg-video-file');
   if (g('cfg-video-interval')) p.video_interval = g('cfg-video-interval');
+  if (g('cfg-pong-difficulty')) p.difficulty = g('cfg-pong-difficulty');
   return p;
 }
 
@@ -732,10 +748,16 @@ async function startEx() {
   const exNum = parseInt(exId.replace('ex', ''));
   const params = getExParams(exId);
 
-  // Build query string
-  const qs = Object.entries(params).map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join('&');
-  await api(`/exercise${exNum}/set?${qs}`);
-  await api(`/exercise${exNum}/start`);
+  // Ex13 (Pong) uses its own endpoints
+  if (exId === 'ex13') {
+    await api('/exercise13/set', { method: 'POST', body: JSON.stringify(params) });
+    await api('/exercise13/start');
+  } else {
+    // Build query string for other exercises
+    const qs = Object.entries(params).map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join('&');
+    await api(`/exercise${exNum}/set?${qs}`);
+    await api(`/exercise${exNum}/start`);
+  }
 
   State.exRunning = true;
   State.exSession = {
@@ -756,6 +778,7 @@ async function stopEx() {
   const exId = State.currentEx;
   const exNum = parseInt(exId.replace('ex', ''));
   for (let i = 1; i <= 12; i++) api(`/exercise${i}/stop`);
+  api('/exercise13/stop');
 
   if (State.exSession) {
     State.exSession.events.push({ t: Date.now(), e: 'stop' });
@@ -781,6 +804,13 @@ function updateExStatus(running, msg) {
 
 async function pollExStatus() {
   if (!State.currentEx) return;
+  if (State.currentEx === 'ex13') {
+    const s = await api('/exercise13/status');
+    if (!s) return;
+    State.exScore = { scoreP: s.score_player, scoreA: s.score_ai };
+    updateExLiveText({ score: State.exScore });
+    return;
+  }
   const exNum = parseInt(State.currentEx.replace('ex', ''));
   const s = await api(`/exercise${exNum}/status`);
   if (!s) return;
@@ -799,7 +829,8 @@ function updateExLiveText(s) {
   let txt = '';
   if (s.score) {
     const sc = s.score;
-    if (sc.hold_time !== undefined) txt = `Maintien: ${sc.hold_time.toFixed(1)}s / ${sc.goal_s || 5}s`;
+    if (sc.scoreP !== undefined) txt = `🏓 Vous: ${sc.scoreP}  —  IA: ${sc.scoreA}`;
+    else if (sc.hold_time !== undefined) txt = `Maintien: ${sc.hold_time.toFixed(1)}s / ${sc.goal_s || 5}s`;
     else if (sc.index !== undefined) txt = `Cible: ${sc.index + 1} | Tours: ${sc.laps || 0}`;
     else if (sc.completed !== undefined) txt = `Points: ${sc.completed} | Idx: ${sc.index}`;
     else if (sc.offtrack !== undefined) txt = `Sorties: ${sc.offtrack} | Idx: ${sc.index}`;

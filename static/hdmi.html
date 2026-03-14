@@ -35,6 +35,230 @@ var offset=0, t0=Date.now();
 // COP trail
 var copTrail=[];
 
+// ---- Pong game state ----
+var pong = {
+  active: false,
+  // ball (normalized -1..1 coords)
+  bx: 0, by: 0,
+  vx: 0.020, vy: 0.018,
+  r: 0.025,
+  // player paddle (bottom) – x position
+  px: 0, pw: 0.18,
+  // AI paddle (top)
+  ax: 0, aw: 0.18,
+  // config (from server)
+  ballSpeed: 0.020, aiSpeed: 0.016, aiError: 0.04, paddleW: 0.18,
+  // scores
+  scoreP: 0, scoreA: 0,
+  // flash
+  flashTimer: 0, flashWho: '',
+  // difficulty label
+  diff: 'medium',
+  lastScorePost: 0,
+};
+
+function pongInit(cfg) {
+  pong.ballSpeed = cfg.pong_ball_speed || 0.020;
+  pong.aiSpeed   = cfg.pong_ai_speed   || 0.016;
+  pong.aiError   = cfg.pong_ai_error   || 0.04;
+  pong.paddleW   = cfg.pong_paddle_w   || 0.18;
+  pong.diff      = cfg.pong_difficulty || 'medium';
+  pong.pw = pong.paddleW;
+  pong.aw = pong.paddleW;
+  pong.scoreP = cfg.pong_score_player || 0;
+  pong.scoreA = cfg.pong_score_ai     || 0;
+  // Randomize starting ball angle
+  var angle = (Math.random() * 0.5 + 0.25) * Math.PI;
+  var s = pong.ballSpeed;
+  pong.bx = 0; pong.by = 0;
+  pong.vx = s * Math.cos(angle) * (Math.random()<0.5?1:-1);
+  pong.vy = s * Math.sin(angle) * (Math.random()<0.5?1:-1);
+  pong.px = 0; pong.ax = 0;
+  pong.active = true;
+  pong.flashTimer = 0;
+}
+
+function pongStep(cop_x) {
+  if (!pong.active) return;
+  var HALF = 0.85; // playfield half-height
+  var HALF_W = 0.9; // half-width
+
+  // Player paddle follows COP X (clamp to field)
+  pong.px = Math.max(-HALF_W + pong.pw/2,
+             Math.min( HALF_W - pong.pw/2, cop_x));
+
+  // AI paddle follows ball with limited speed + error
+  var aiTarget = pong.bx + (Math.random()-0.5)*pong.aiError*2;
+  var aiDx = aiTarget - pong.ax;
+  var aiMaxStep = pong.aiSpeed;
+  if (Math.abs(aiDx) < aiMaxStep) { pong.ax = aiTarget; }
+  else { pong.ax += Math.sign(aiDx) * aiMaxStep; }
+  pong.ax = Math.max(-HALF_W + pong.aw/2, Math.min(HALF_W - pong.aw/2, pong.ax));
+
+  // Move ball
+  pong.bx += pong.vx;
+  pong.by += pong.vy;
+
+  // Wall bounce (left/right)
+  if (pong.bx - pong.r < -HALF_W) { pong.bx = -HALF_W + pong.r; pong.vx = Math.abs(pong.vx); }
+  if (pong.bx + pong.r >  HALF_W) { pong.bx =  HALF_W - pong.r; pong.vx = -Math.abs(pong.vx); }
+
+  // Player paddle collision (bottom: by = -HALF + paddle_h)
+  var PP_Y = -HALF + 0.07;
+  if (pong.vy < 0 && pong.by - pong.r < PP_Y + 0.04 && pong.by > PP_Y - 0.05) {
+    if (Math.abs(pong.bx - pong.px) < pong.pw/2 + pong.r) {
+      var dx = (pong.bx - pong.px) / (pong.pw/2);
+      var spd = pong.ballSpeed * (1 + Math.abs(dx)*0.3);
+      pong.vx = dx * spd;
+      pong.vy = Math.abs(spd * Math.sqrt(Math.max(0.1, 1 - dx*dx*0.6)));
+      pong.by = PP_Y + 0.04 + pong.r;
+    }
+  }
+
+  // AI paddle collision (top: by = +HALF - paddle_h)
+  var AI_Y = HALF - 0.07;
+  if (pong.vy > 0 && pong.by + pong.r > AI_Y - 0.04 && pong.by < AI_Y + 0.05) {
+    if (Math.abs(pong.bx - pong.ax) < pong.aw/2 + pong.r) {
+      var dx2 = (pong.bx - pong.ax) / (pong.aw/2);
+      var spd2 = pong.ballSpeed * (1 + Math.abs(dx2)*0.3);
+      pong.vx = dx2 * spd2;
+      pong.vy = -Math.abs(spd2 * Math.sqrt(Math.max(0.1, 1 - dx2*dx2*0.6)));
+      pong.by = AI_Y - 0.04 - pong.r;
+    }
+  }
+
+  // Point scored
+  if (pong.by < -HALF - 0.05) {
+    pong.scoreA++;
+    pong.flashWho = 'ai'; pong.flashTimer = 60;
+    _pongReset(); _pongPostScore();
+  }
+  if (pong.by > HALF + 0.05) {
+    pong.scoreP++;
+    pong.flashWho = 'player'; pong.flashTimer = 60;
+    _pongReset(); _pongPostScore();
+  }
+  if (pong.flashTimer > 0) pong.flashTimer--;
+}
+
+function _pongReset() {
+  pong.bx = 0; pong.by = 0;
+  var angle = (Math.random() * 0.5 + 0.25) * Math.PI;
+  var s = pong.ballSpeed;
+  pong.vx = s * Math.cos(angle) * (Math.random()<0.5?1:-1);
+  pong.vy = s * Math.sin(angle) * (Math.random()<0.5?1:-1);
+}
+
+function _pongPostScore() {
+  var now = Date.now();
+  if (now - pong.lastScorePost < 400) return;
+  pong.lastScorePost = now;
+  fetch('/exercise13/score', {method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({score_player: pong.scoreP, score_ai: pong.scoreA})
+  }).catch(function(){});
+}
+
+function drawPong() {
+  dims();
+  var HALF = 0.85;
+  var HALF_W = 0.9;
+  var PP_Y  = -HALF + 0.07;
+  var AI_Y  =  HALF - 0.07;
+  var PW = pong.pw, AW = pong.aw;
+
+  // Update ball physics using COP X
+  pongStep(crx);
+
+  // Background gradient
+  var bg = ctx.createLinearGradient(0, 0, 0, H);
+  bg.addColorStop(0,   '#0a0a1a');
+  bg.addColorStop(0.5, '#0d1b2a');
+  bg.addColorStop(1,   '#0a0a1a');
+  ctx.fillStyle = bg; ctx.fillRect(0, 0, W, H);
+
+  // Center dashed line
+  ctx.setLineDash([16, 12]);
+  ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+  ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(0, CY); ctx.lineTo(W, CY); ctx.stroke();
+  ctx.setLineDash([]);
+
+  // Flash effect when point scored
+  if (pong.flashTimer > 0) {
+    var alpha = pong.flashTimer / 60 * 0.35;
+    ctx.fillStyle = pong.flashWho === 'player'
+      ? 'rgba(34,197,94,' + alpha + ')' : 'rgba(239,68,68,' + alpha + ')';
+    ctx.fillRect(0, 0, W, H);
+  }
+
+  // Scores
+  ctx.font = 'bold ' + Math.round(H*0.14) + 'px monospace';
+  ctx.textAlign = 'center';
+  ctx.fillStyle = 'rgba(255,255,255,0.25)';
+  ctx.fillText(pong.scoreA, CX, CY - H*0.05);
+  ctx.fillText(pong.scoreP, CX, CY + H*0.14);
+
+  // Difficulty label
+  ctx.font = Math.round(H*0.025) + 'px sans-serif';
+  ctx.fillStyle = 'rgba(255,255,255,0.35)';
+  ctx.fillText('PONG – ' + pong.diff.toUpperCase(), CX, H*0.02 + H*0.025);
+
+  // COP position guide (small indicator at bottom)
+  ctx.font = Math.round(H*0.02) + 'px sans-serif';
+  ctx.fillStyle = 'rgba(96,165,250,0.6)';
+  ctx.fillText('COP: ' + crx.toFixed(2), W - 80, H - 12);
+
+  // Player paddle (bottom) – blue gradient
+  var pxS = CX + pong.px * SC, pyS = CY - PP_Y * SC;
+  var pw2 = pong.pw/2 * SC * 2;
+  var ph  = 0.05 * SC;
+  var pGrad = ctx.createLinearGradient(pxS - pw2/2, 0, pxS + pw2/2, 0);
+  pGrad.addColorStop(0,   '#1e40af');
+  pGrad.addColorStop(0.5, '#3b82f6');
+  pGrad.addColorStop(1,   '#1e40af');
+  ctx.shadowColor = '#60a5fa'; ctx.shadowBlur = 18;
+  ctx.fillStyle = pGrad;
+  var pr = Math.min(ph/2, 8);
+  ctx.beginPath();
+  ctx.roundRect(pxS - pw2/2, pyS - ph/2, pw2, ph, pr);
+  ctx.fill();
+  noGlow();
+
+  // AI paddle (top) – red gradient
+  var axS = CX + pong.ax * SC, ayS = CY - AI_Y * SC;
+  var aw2 = pong.aw/2 * SC * 2;
+  var aiGrad = ctx.createLinearGradient(axS - aw2/2, 0, axS + aw2/2, 0);
+  aiGrad.addColorStop(0,   '#991b1b');
+  aiGrad.addColorStop(0.5, '#ef4444');
+  aiGrad.addColorStop(1,   '#991b1b');
+  ctx.shadowColor = '#f87171'; ctx.shadowBlur = 18;
+  ctx.fillStyle = aiGrad;
+  ctx.beginPath();
+  ctx.roundRect(axS - aw2/2, ayS - ph/2, aw2, ph, pr);
+  ctx.fill();
+  noGlow();
+
+  // Ball with glow
+  var bxS = CX + pong.bx * SC, byS = CY - pong.by * SC;
+  var br  = pong.r * SC;
+  ctx.shadowColor = '#facc15'; ctx.shadowBlur = 24;
+  var ballGrad = ctx.createRadialGradient(bxS - br*0.3, byS - br*0.3, br*0.1, bxS, byS, br);
+  ballGrad.addColorStop(0, '#fef9c3');
+  ballGrad.addColorStop(1, '#eab308');
+  ctx.fillStyle = ballGrad;
+  ctx.beginPath(); ctx.arc(bxS, byS, br, 0, Math.PI*2); ctx.fill();
+  noGlow();
+
+  // Labels
+  ctx.font = 'bold ' + Math.round(H*0.022) + 'px sans-serif';
+  ctx.textAlign = 'left';
+  ctx.fillStyle = '#93c5fd';
+  ctx.fillText('VOUS', 20, CY + H*0.24);
+  ctx.fillStyle = '#fca5a5';
+  ctx.fillText('IA', 20, CY - H*0.20);
+}
+
 // =====================================================================
 // UTILS
 // =====================================================================
@@ -570,6 +794,7 @@ function draw() {
     ctx.clearRect(0,0,W,H); drawHud(); requestAnimationFrame(draw); return;
   }
   if(mode==='opto'){ drawOpto(); drawHud(); requestAnimationFrame(draw); return; }
+  if(mode==='pong'){ drawPong(); requestAnimationFrame(draw); return; }
   ctx.fillStyle='#000'; ctx.fillRect(0,0,W,H);
   if(mode==='vor')       drawVor();
   else if(mode==='point') drawMovPt();
@@ -597,9 +822,15 @@ function updateVideo(){
 // =====================================================================
 // POLL SERVER STATE
 // =====================================================================
+var _prevMode = '';
 setInterval(function(){
   fetch('/hdmi/mode').then(function(r){return r.json();}).then(function(d){
-    mode=d.mode||'off';
+    var newMode=d.mode||'off';
+    // Initialize pong when mode switches to pong
+    if(newMode==='pong' && _prevMode!=='pong') { pongInit(d); }
+    if(newMode!=='pong' && _prevMode==='pong') { pong.active=false; }
+    _prevMode = newMode;
+    mode=newMode;
     direction=d.direction||'right'; speed=parseInt(d.speed||6); stripe=parseInt(d.stripe||80);
     vor_pair=d.vor_pair||'lr'; point_mode=d.point_mode||'lr'; point_speed=d.point_speed||'medium';
     tgx=parseFloat(d.target_x||0); tgy=parseFloat(d.target_y||0);

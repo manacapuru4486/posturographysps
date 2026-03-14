@@ -184,7 +184,40 @@ def videos_delete(filename):
 _mpv_proc = None
 _mpv_lock = threading.Lock()
 
-def _mpv_stop():
+_XDISP = {"DISPLAY": ":0"}
+
+def _chromium_hide():
+    """Minimize Chromium so MPV fullscreen is visible."""
+    env = os.environ.copy(); env.update(_XDISP)
+    for cmd in [
+        ["xdotool", "search", "--class", "chromium", "windowminimize"],
+        ["xdotool", "search", "--class", "Chromium", "windowminimize"],
+        ["wmctrl", "-r", "Chromium", "-b", "add,hidden"],
+    ]:
+        try:
+            subprocess.run(cmd, env=env, timeout=2,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            print("[MPV] Chromium minimized"); return
+        except Exception:
+            continue
+
+def _chromium_restore():
+    """Raise Chromium after MPV stops."""
+    env = os.environ.copy(); env.update(_XDISP)
+    for cmd in [
+        ["xdotool", "search", "--class", "chromium", "windowmap", "windowraise"],
+        ["xdotool", "search", "--class", "Chromium", "windowmap", "windowraise"],
+        ["wmctrl", "-r", "Chromium", "-b", "remove,hidden"],
+        ["wmctrl", "-a", "Chromium"],
+    ]:
+        try:
+            subprocess.run(cmd, env=env, timeout=2,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            print("[MPV] Chromium restored"); return
+        except Exception:
+            continue
+
+def _mpv_stop(restore_chromium=True):
     global _mpv_proc
     with _mpv_lock:
         if _mpv_proc and _mpv_proc.poll() is None:
@@ -194,11 +227,13 @@ def _mpv_stop():
             except Exception:
                 _mpv_proc.kill()
         _mpv_proc = None
+    if restore_chromium:
+        _chromium_restore()
     print("[MPV] Stopped")
 
 def _mpv_play(filepath, loop=True):
     global _mpv_proc
-    _mpv_stop()
+    _mpv_stop(restore_chromium=False)   # stop old process; don't restore yet
     if not filepath or not os.path.isfile(filepath):
         print(f"[MPV] File not found: {filepath}")
         return False
@@ -207,6 +242,7 @@ def _mpv_play(filepath, loop=True):
     cmd = [
         "mpv",
         "--fullscreen",
+        "--ontop",          # stay above Chromium in case xdotool unavailable
         "--no-osc",
         "--no-border",
         "--quiet",
@@ -217,6 +253,7 @@ def _mpv_play(filepath, loop=True):
     if loop:
         cmd.append("--loop=inf")
     cmd.append(filepath)
+    _chromium_hide()        # hide Chromium before launching MPV
     try:
         with _mpv_lock:
             _mpv_proc = subprocess.Popen(
@@ -411,7 +448,7 @@ def _get_fonts():
     return _FONT_NAME, _FONT_BOLD
 
 
-def _build_sot_pdf(pdf_path, source_csv, results_by_c, img_paths):
+def _build_sot_pdf(pdf_path, source_csv, results_by_c, img_paths, debug_info=None):
     """
     Professional clinical SOT report — clean French encoding.
     Inspired by Framiral Multitest layout.
@@ -646,6 +683,65 @@ def _build_sot_pdf(pdf_path, source_csv, results_by_c, img_paths):
         story.append(tbl_r)
         story.append(Spacer(1, 0.3*RL_CM))
 
+    # ---- Sensory Organization Diagram (horizontal bars like Framiral) ----
+    if valid_ratios:
+        story.append(Paragraph("Organisation sensorielle", style_h2))
+        # Reference norms: SOM>0.8, VIS>0.8, VEST>0.6, PREF_VIS<1.0 (lower=better)
+        sens_labels = {
+            "Somesthesie (C2/C1)": ("Somatosensoriel", 0.0, 1.5, 0.8, 1.0),
+            "Vision (C4/C1)":       ("Vision",           0.0, 1.5, 0.8, 1.0),
+            "Vestibule (C5/C1)":    ("Vestibulaire",     0.0, 1.5, 0.6, 1.0),
+            "Pref. visuelle ((C3+C6)/(C2+C5))": ("Dependance visuelle", 0.0, 2.5, 0.0, 1.0),
+        }
+        n_sens = len([k for k in sens_labels if k in valid_ratios])
+        if n_sens:
+            fig2, axes = plt.subplots(n_sens, 1, figsize=(7.5, 0.9 * n_sens + 0.4))
+            if n_sens == 1:
+                axes = [axes]
+            ax_idx = 0
+            for key, (label, vmin, vmax, norm_lo, norm_hi) in sens_labels.items():
+                if key not in valid_ratios:
+                    continue
+                ax2 = axes[ax_idx]; ax_idx += 1
+                val = valid_ratios[key]
+                # green normal zone
+                ax2.barh([0], [norm_hi - norm_lo], left=norm_lo, height=0.55,
+                         color="#dcfce7", edgecolor="#86efac", linewidth=0.8, zorder=1)
+                # patient bar
+                bar_col = "#22c55e" if norm_lo <= val <= norm_hi else (
+                    "#eab308" if abs(val - (norm_lo + norm_hi)/2) < 0.3 else "#ef4444")
+                ax2.barh([0], [val - vmin], left=vmin, height=0.4, color=bar_col,
+                         alpha=0.9, zorder=2)
+                ax2.set_xlim(vmin, vmax)
+                ax2.set_yticks([0]); ax2.set_yticklabels([label], fontsize=8.5)
+                ax2.axvline(norm_lo, color="#16a34a", linewidth=0.8, linestyle="--", alpha=0.7)
+                ax2.axvline(norm_hi, color="#16a34a", linewidth=0.8, linestyle="--", alpha=0.7)
+                ax2.text(val + 0.03, 0, f"{val:.2f}", va="center", fontsize=8, fontweight="bold")
+                ax2.spines["top"].set_visible(False); ax2.spines["right"].set_visible(False)
+                ax2.set_facecolor("#f8fafc")
+            fig2.patch.set_facecolor("#ffffff")
+            plt.tight_layout(pad=0.4)
+            sens_chart = os.path.join(os.path.dirname(pdf_path), "sensory_chart.png")
+            plt.savefig(sens_chart, dpi=150, bbox_inches="tight")
+            plt.close(fig2)
+            if os.path.isfile(sens_chart):
+                story.append(RLImage(sens_chart, width=W_avail, height=min(10*RL_CM, n_sens*2.4*RL_CM)))
+        story.append(Spacer(1, 0.4*RL_CM))
+
+    # ---- Empty results diagnostic ----
+    if not results_by_c and debug_info:
+        story.append(Paragraph("Diagnostic – aucune donnee analysee", style_h2))
+        n_rows = debug_info.get("csv_rows", 0)
+        cond_dist = debug_info.get("csv_conditions", {})
+        story.append(Paragraph(
+            f"Le fichier CSV contient {n_rows} ligne(s) de donnees. "
+            f"Distribution des conditions : {cond_dist if cond_dist else 'aucune'}. "
+            "Veuillez verifier que la tare ET le centrage ont ete effectues avant de demarrer le SOT, "
+            "et que chaque condition a ete lancee via le bouton START.",
+            style_body
+        ))
+        story.append(Spacer(1, 0.3*RL_CM))
+
     # ---- Stability bar chart ----
     if stab_values:
         story.append(Paragraph("Profil de stabilite (%)", style_h2))
@@ -718,6 +814,79 @@ def _build_sot_pdf(pdf_path, source_csv, results_by_c, img_paths):
 
 # Monkey-patch the PDF builder in the original module
 _srv.build_multitest_like_pdf = _build_sot_pdf
+
+# =========================================================
+# PATCHED analyze_sot_csv – better type handling + debug info
+# =========================================================
+def _patched_analyze_sot_csv(csv_path):
+    """Drop-in replacement with robust condition type handling."""
+    import pandas as pd
+    df = pd.read_csv(csv_path)
+    required = {"time", "condition", "cop_x_cm", "cop_y_cm"}
+    if not required.issubset(set(df.columns)):
+        raise RuntimeError("CSV colonnes manquantes")
+
+    # Normalize condition column to int (handles float/string representations)
+    df["condition"] = pd.to_numeric(df["condition"], errors="coerce").fillna(0).astype(int)
+
+    csv_rows = len(df)
+    cond_dist = {str(k): int(v) for k, v in df["condition"].value_counts().items()} if csv_rows else {}
+    print(f"[ANALYZE] CSV rows={csv_rows} condition distribution={cond_dist}")
+
+    base = os.path.splitext(os.path.basename(csv_path))[0]
+    out_dir = os.path.join(os.path.dirname(csv_path), base + "_results")
+    os.makedirs(out_dir, exist_ok=True)
+
+    results_by_c = {}
+    img_paths = {}
+    for c in range(1, 7):
+        dfc = df[df["condition"] == c]
+        if dfc.empty:
+            continue
+        res, win = _srv.analyze_one_condition(dfc, c)
+        if res is None:
+            continue
+        results_by_c[c] = res
+        if win is not None and len(win) >= 10 and "error" not in res:
+            img_paths[c] = _srv.plot_statok_png(win, res, out_dir)
+
+    json_path = os.path.join(out_dir, "results.json")
+    payload = {
+        "source_csv": os.path.basename(csv_path),
+        "generated_at": datetime.now().isoformat(),
+        "protocol": _srv.SOT_PROTOCOL,
+        "results": [results_by_c[k] for k in sorted(results_by_c.keys())],
+        "csv_rows": csv_rows,
+        "csv_conditions": cond_dist,
+    }
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2, ensure_ascii=False, default=str)
+
+    pdf_path = os.path.join(out_dir, "report.pdf")
+    _build_sot_pdf(pdf_path, csv_path, results_by_c, img_paths,
+                   debug_info={"csv_rows": csv_rows, "csv_conditions": cond_dist})
+    return out_dir, json_path, pdf_path
+
+_srv.analyze_sot_csv = _patched_analyze_sot_csv
+
+# Also expose a debug endpoint for SOT CSV inspection
+@app.route("/sot/csv-debug")
+def sot_csv_debug():
+    try:
+        import pandas as pd
+        p = _srv.current_log_path
+        if not p or not os.path.isfile(p):
+            return _json_resp({"error": "no log file", "path": p})
+        df = pd.read_csv(p)
+        df["condition"] = pd.to_numeric(df["condition"], errors="coerce").fillna(0).astype(int)
+        dist = {str(k): int(v) for k, v in df["condition"].value_counts().items()}
+        return _json_resp({
+            "path": p, "rows": len(df), "columns": list(df.columns),
+            "condition_distribution": dist,
+            "sample_first": df.head(3).to_dict(orient="records") if len(df) > 0 else []
+        })
+    except Exception as e:
+        return _json_resp({"error": str(e)})
 
 # =========================================================
 # PATIENTS API
@@ -891,6 +1060,94 @@ def presets_delete(preset_id):
     with _data_lock:
         presets = _load_json(PRESETS_FILE)
         _save_json(PRESETS_FILE, [p for p in presets if p.get("id") != preset_id])
+    return _json_resp({"ok": True})
+
+# =========================================================
+# EXERCISE 13 – PONG (COP-controlled paddle)
+# =========================================================
+_ex13_running = False
+_ex13_mode = {
+    "difficulty": "medium",   # beginner / medium / hard
+    "platform":   "fixed",
+    "score_player": 0,
+    "score_ai":     0,
+}
+_ex13_lock = threading.Lock()
+
+PONG_DIFFICULTY = {
+    "beginner": {"paddle_w": 0.30, "ball_speed": 0.012, "ai_speed": 0.010, "ai_error": 0.08},
+    "medium":   {"paddle_w": 0.18, "ball_speed": 0.020, "ai_speed": 0.016, "ai_error": 0.04},
+    "hard":     {"paddle_w": 0.10, "ball_speed": 0.030, "ai_speed": 0.024, "ai_error": 0.01},
+}
+
+@app.route("/exercise13/set", methods=["POST"])
+def ex13_set():
+    body = _body()
+    with _ex13_lock:
+        _ex13_mode.update({k: v for k, v in body.items() if k in _ex13_mode})
+    return _json_resp({"ok": True, "mode": _ex13_mode})
+
+@app.route("/exercise13/start", methods=["GET", "POST"])
+def ex13_start():
+    global _ex13_running
+    with _ex13_lock:
+        diff = _ex13_mode.get("difficulty", "medium")
+        plat = _ex13_mode.get("platform", "fixed")
+        _ex13_mode["score_player"] = 0
+        _ex13_mode["score_ai"]     = 0
+        _ex13_running = True
+    cfg = PONG_DIFFICULTY.get(diff, PONG_DIFFICULTY["medium"])
+    # Platform control
+    if plat == "auto":
+        _srv.send_to_esp = True
+        _srv.esp_send("ARM:1"); time.sleep(0.05); _srv.esp_send("AUTO:1")
+    else:
+        _srv.send_to_esp = False
+        _srv.esp_send("STOP")
+    # Update HDMI state for pong rendering
+    _srv.set_hdmi(
+        mode="pong",
+        title=f"PONG – {diff.capitalize()}",
+    )
+    _srv.hdmi_state.update({
+        "pong_difficulty": diff,
+        "pong_paddle_w":   cfg["paddle_w"],
+        "pong_ball_speed": cfg["ball_speed"],
+        "pong_ai_speed":   cfg["ai_speed"],
+        "pong_ai_error":   cfg["ai_error"],
+        "pong_score_player": 0,
+        "pong_score_ai":     0,
+    })
+    return _json_resp({"ok": True, "difficulty": diff})
+
+@app.route("/exercise13/stop", methods=["GET", "POST"])
+def ex13_stop():
+    global _ex13_running
+    with _ex13_lock:
+        _ex13_running = False
+    _srv.send_to_esp = False
+    _srv.esp_send("STOP")
+    _srv.set_hdmi(mode="off")
+    return _json_resp({"ok": True, "score_player": _ex13_mode["score_player"],
+                       "score_ai": _ex13_mode["score_ai"]})
+
+@app.route("/exercise13/status")
+def ex13_status():
+    with _ex13_lock:
+        mode_copy = dict(_ex13_mode)
+    return _json_resp({"running": _ex13_running, **mode_copy})
+
+@app.route("/exercise13/score", methods=["POST"])
+def ex13_score():
+    """Called by HDMI canvas when a point is scored."""
+    body = _body()
+    with _ex13_lock:
+        if "score_player" in body:
+            _ex13_mode["score_player"] = int(body["score_player"])
+        if "score_ai" in body:
+            _ex13_mode["score_ai"] = int(body["score_ai"])
+        _srv.hdmi_state["pong_score_player"] = _ex13_mode["score_player"]
+        _srv.hdmi_state["pong_score_ai"]     = _ex13_mode["score_ai"]
     return _json_resp({"ok": True})
 
 # =========================================================
