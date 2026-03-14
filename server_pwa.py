@@ -130,10 +130,19 @@ def video_path(filename):
 # Patch list_static_videos in the original module so exercise12 picks up videos/ too
 _srv.list_static_videos = list_all_videos
 
-@app.route("/videos/list")
-def videos_list_route():
+# Override existing /videos/list view function (already declared in serverexercice8v3)
+def _videos_list_override():
     vids = list_all_videos()
     return _json_resp({"videos": vids, "count": len(vids)})
+app.view_functions["videos_list_route"] = _videos_list_override
+
+# Override Flask static file serving to also cover static/ (already handled by Flask,
+# but we need send_from_directory for the /static prefix on older setups)
+def _static_override(filename):
+    return send_from_directory(STATIC_DIR, filename)
+# Only override if a 'static' endpoint exists; Flask registers it automatically
+if "static" in app.view_functions:
+    app.view_functions["static"] = _static_override
 
 @app.route("/videos/<path:filename>")
 def videos_serve(filename):
