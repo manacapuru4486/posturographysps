@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SOT Control</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+  </head>
+  <body>
+    <header>
+      <div>
+        <h1>SOT — Pilotage Wi‑Fi</h1>
+        <p>Plateforme motorisée + WBB + ESP32</p>
+      </div>
+      <div class="status">
+        <span class="pill">Session: {{ active_session.name if active_session else 'Aucune' }}</span>
+        <span class="pill">WBB: {{ 'ON' if state.wbb_process and state.wbb_process.poll() is none else 'OFF' }}</span>
+      </div>
+    </header>
+
+    <main>
+      <section class="card">
+        <h2>Nouvelle session</h2>
+        <form method="post" action="/session/new" class="grid">
+          <label>
+            Nom complet
+            <input type="text" name="name" required />
+          </label>
+          <label>
+            ID patient
+            <input type="text" name="patient_id" />
+          </label>
+          <label>
+            Date de naissance
+            <input type="text" name="dob" placeholder="JJ/MM/AAAA" />
+          </label>
+          <label>
+            Taille (cm)
+            <input type="number" name="height_cm" step="0.1" />
+          </label>
+          <label>
+            Poids (kg)
+            <input type="number" name="weight_kg" step="0.1" />
+          </label>
+          <label class="full">
+            Notes
+            <textarea name="notes" rows="3"></textarea>
+          </label>
+          <button type="submit" class="primary">Créer la session</button>
+        </form>
+      </section>
+
+      <section class="card">
+        <h2>Sessions récentes</h2>
+        <form method="post" action="/session/select" class="inline">
+          <select name="session_path">
+            {% for session in sessions %}
+            <option value="{{ session }}" {% if active_session and session == active_session %}selected{% endif %}>
+              {{ session.name }}
+            </option>
+            {% endfor %}
+          </select>
+          <button type="submit">Charger</button>
+        </form>
+        {% if patient %}
+        <div class="summary">
+          <h3>Patient</h3>
+          <p><strong>{{ patient.name or '—' }}</strong> ({{ patient.patient_id or 'ID ?' }})</p>
+          <p>Naissance : {{ patient.dob or '—' }} | Taille : {{ patient.height_cm or '—' }} cm | Poids : {{ patient.weight_kg or '—' }} kg</p>
+          <p class="muted">{{ patient.notes or '' }}</p>
+        </div>
+        {% endif %}
+      </section>
+
+      <section class="card">
+        <h2>Commandes ESP32</h2>
+        <div class="button-grid">
+          {% for cmd in ['ARM:1','ARM:0','HOME','CENTER','PROFILE:SOT','AUTO:1','AUTO:0','STOP'] %}
+          <form method="post" action="/esp/command">
+            <input type="hidden" name="command" value="{{ cmd }}" />
+            <button type="submit">{{ cmd }}</button>
+          </form>
+          {% endfor %}
+        </div>
+        <form method="post" action="/esp/command" class="inline">
+          <input type="text" name="command" placeholder="Commande personnalisée" />
+          <button type="submit">Envoyer</button>
+        </form>
+        <p class="muted">Port série: {{ config.serial_port }} @ {{ config.serial_baud }} bps</p>
+      </section>
+
+      <section class="card">
+        <h2>Streaming WBB</h2>
+        <form method="post" action="/wbb/start" class="grid">
+          <label class="full">
+            Arguments send_wbb.py
+            <input type="text" name="wbb_args" value="{{ default_wbb_args }}" />
+          </label>
+          <button type="submit" class="primary">Démarrer le streaming</button>
+        </form>
+        <form method="post" action="/wbb/stop">
+          <button type="submit" class="secondary">Arrêter</button>
+        </form>
+        <p class="muted">N'oubliez pas d'appuyer sur le bouton SYNC rouge de la WBB.</p>
+      </section>
+
+      <section class="card">
+        <h2>Conditions SOT (20 s)</h2>
+        <div class="conditions">
+          {% for cond in ['C1','C2','C3','C4','C5','C6'] %}
+          <div class="condition">
+            <div>
+              <strong>{{ cond }}</strong>
+              <div class="muted">{{ 'Plateforme fixe' if cond in ['C1','C2','C3'] else 'Plateforme asservie' }}</div>
+            </div>
+            <button type="button" class="timer" data-condition="{{ cond }}">Démarrer 20 s</button>
+          </div>
+          {% endfor %}
+        </div>
+        <p class="muted">Les timers sont locaux au navigateur : ils servent de guide opérateur.</p>
+      </section>
+
+      <section class="card">
+        <h2>Rapport PDF</h2>
+        <form method="post" action="/pdf/generate">
+          <button type="submit" class="primary">Générer SOT_report.pdf</button>
+        </form>
+        <p class="muted">Le script utilisera summary.csv de la session active.</p>
+      </section>
+    </main>
+
+    <script>
+      document.querySelectorAll(".timer").forEach((button) => {
+        button.addEventListener("click", () => {
+          if (button.dataset.running === "true") {
+            return;
+          }
+          const duration = 20;
+          let remaining = duration;
+          button.dataset.running = "true";
+          button.textContent = `⏱ ${remaining}s`;
+          const interval = setInterval(() => {
+            remaining -= 1;
+            if (remaining <= 0) {
+              clearInterval(interval);
+              button.textContent = "Terminé";
+              button.dataset.running = "false";
+              button.classList.add("done");
+              return;
+            }
+            button.textContent = `⏱ ${remaining}s`;
+          }, 1000);
+        });
+      });
+    </script>
+  </body>
+</html>
