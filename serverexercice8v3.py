@@ -1449,8 +1449,19 @@ def system_shutdown():
     except: pass
     def delayed_shutdown():
         time.sleep(1.0)
-        try: subprocess.Popen(["sudo", "shutdown", "-h", "now"])
-        except Exception as e: print("[SHUTDOWN ERROR]", e)
+        # Try in order: systemctl (no sudo on systemd), sudo -n (NOPASSWD sudoers), sudo
+        for cmd in (
+            ["systemctl", "poweroff"],
+            ["sudo", "-n", "shutdown", "-h", "now"],
+            ["sudo", "shutdown", "-h", "now"],
+        ):
+            try:
+                ret = subprocess.call(cmd, timeout=5)
+                if ret == 0:
+                    return
+            except Exception as e:
+                print(f"[SHUTDOWN] {cmd[0]} failed: {e}")
+        print("[SHUTDOWN ERROR] all methods failed – run setup/install_sudoers.sh")
     threading.Thread(target=delayed_shutdown, daemon=True).start()
     return "SHUTDOWN\n"
 
@@ -3351,7 +3362,7 @@ button:disabled{opacity:.45;cursor:not-allowed}
 <div class="box"><button class="green" onclick="startEx()" id="btn_start" disabled>START</button><button class="red" onclick="stopEx()">STOP</button></div>
 </div>
 <div class="status" id="st">-</div>
-<div class="box row"><button class="blue" onclick="window.location='/'">Accueil</button><button class="blue" onclick="window.location='/sot'">SOT</button><button class="red" onclick="shutdownPi()" style="font-size:13px">ETEINDRE LE RASPBERRY</button></div>
+<div class="box row"><button class="blue" onclick="window.location='/'">Accueil</button><button class="blue" onclick="window.location='/sot'">SOT</button><button class="red" onclick="shutdownPi()" style="font-size:13px">ETEINDRE LE PC</button></div>
 
 <script>
 var os=6,cx="ex1",exAll=["ex1","ex2","ex3","ex4","ex5","ex6","ex7","ex8","ex9","ex10","ex11","ex12"];
