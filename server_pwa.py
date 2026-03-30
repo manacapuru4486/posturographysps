@@ -1355,6 +1355,181 @@ def ex13_score():
     return _json_resp({"ok": True})
 
 # =========================================================
+# EXERCISE 14 – DOLPHIN / WII PLAY
+# =========================================================
+_ex14_running = False
+_ex14_dolphin = None   # subprocess.Popen handle
+_ex14_mode = {
+    "platform":  "fixed",
+    "amplitude": "medium",
+    "speed":     "medium",
+}
+_ex14_lock = threading.Lock()
+
+_DOLPHIN_GAME = "/home/sylvain/WII/WiiPlay.rvz"
+
+
+def _ex14_platform_loop():
+    """Platform motion thread for exercise14 (sinus / ramp / impulses)."""
+    import math, random as _rnd
+    with _ex14_lock:
+        plat = _ex14_mode.get("platform", "fixed")
+        akey = _ex14_mode.get("amplitude", "medium")
+        skey = _ex14_mode.get("speed", "medium")
+
+    amp  = _srv.exercise2_amp_value(akey)
+    freq = _srv.exercise2_freq_value(skey)
+    slew = _srv.exercise_slew_per_s(skey)
+
+    t0      = time.time()
+    cmd_now = 0.0
+    last_t  = t0
+
+    if plat == "impulses":
+        while _ex14_running:
+            wait_s = _rnd.uniform(1.0, 3.0)
+            t_wait = time.time()
+            while _ex14_running and (time.time() - t_wait < wait_s):
+                if _srv.uart:
+                    try: _srv.uart.write(b"COP:Y:0.0000\n")
+                    except: pass
+                time.sleep(0.02)
+            if not _ex14_running:
+                break
+            sign = _rnd.choice([-1.0, 1.0])
+            amp4 = _srv.exercise4_amp_value(akey)
+            pd   = _srv.exercise_pulse_duration(skey)
+            t0p  = time.time()
+            while _ex14_running:
+                phase = (time.time() - t0p) / pd
+                if phase >= 1.0:
+                    break
+                cmd = sign * amp4 * _srv.exercise4_pulse_shape(phase)
+                cmd = _srv.ex2_apply_soft_limit(cmd)
+                cmd = max(-_srv.CMD_MAX, min(_srv.CMD_MAX, cmd))
+                if _srv.uart:
+                    try: _srv.uart.write(f"COP:Y:{cmd:.4f}\n".encode("ascii"))
+                    except: pass
+                time.sleep(0.02)
+        return
+
+    # Sinus or ramp
+    while _ex14_running:
+        now     = time.time()
+        dt      = max(0.001, now - last_t)
+        last_t  = now
+        elapsed = now - t0
+
+        if plat == "sinus":
+            cmd_target = amp * math.sin(2 * math.pi * freq * elapsed)
+        else:   # ramp
+            phase_env  = (elapsed % 24.0) / 24.0
+            env        = _srv.exercise3_envelope(phase_env)
+            cmd_target = (amp * env) * math.sin(2 * math.pi * freq * elapsed)
+
+        cmd_target = _srv.ex2_apply_soft_limit(cmd_target)
+        max_step   = slew * dt
+        delta      = cmd_target - cmd_now
+        delta      = max(-max_step, min(max_step, delta))
+        cmd_now   += delta
+
+        if _srv.uart:
+            try: _srv.uart.write(f"COP:Y:{cmd_now:.4f}\n".encode("ascii"))
+            except: pass
+        time.sleep(0.02)
+
+
+def _ex14_stop_dolphin():
+    global _ex14_dolphin
+    if _ex14_dolphin is not None:
+        try:
+            _ex14_dolphin.terminate()
+            try:    _ex14_dolphin.wait(timeout=3)
+            except subprocess.TimeoutExpired: _ex14_dolphin.kill()
+        except Exception as e:
+            print(f"[EX14] Dolphin stop error: {e}")
+        _ex14_dolphin = None
+
+
+@app.route("/exercise14/set", methods=["GET", "POST"])
+def ex14_set():
+    if request.method == "POST":
+        body = _body()
+    else:
+        body = request.args.to_dict()
+    with _ex14_lock:
+        for k in ("platform", "amplitude", "speed"):
+            if k in body:
+                _ex14_mode[k] = body[k]
+    return _json_resp({"ok": True, "mode": _ex14_mode})
+
+
+@app.route("/exercise14/start", methods=["GET", "POST"])
+def ex14_start():
+    global _ex14_running, _ex14_dolphin
+    # Stop any previous instance first
+    with _ex14_lock:
+        _ex14_running = False
+    _ex14_stop_dolphin()
+    time.sleep(0.1)
+
+    with _ex14_lock:
+        plat = _ex14_mode.get("platform", "fixed")
+        _ex14_running = True
+
+    # Platform control
+    if plat == "auto":
+        _srv.send_to_esp = True
+        _srv.esp_send("ARM:1"); time.sleep(0.05); _srv.esp_send("AUTO:1")
+    elif plat in ("sinus", "ramp", "impulses"):
+        _srv.send_to_esp = True
+        _srv.esp_send("ARM:1"); time.sleep(0.05); _srv.esp_send("AUTO:1")
+        threading.Thread(target=_ex14_platform_loop, daemon=True).start()
+    else:  # fixed
+        _srv.send_to_esp = False
+        _srv.esp_send("STOP")
+
+    # Launch Dolphin fullscreen
+    env = os.environ.copy()
+    env["DISPLAY"] = ":0"
+    try:
+        _ex14_dolphin = subprocess.Popen(
+            ["flatpak", "run", "org.DolphinEmu.dolphin-emu",
+             "--batch", "--exec", _DOLPHIN_GAME, "--fullscreen"],
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        pid = _ex14_dolphin.pid
+    except Exception as e:
+        print(f"[EX14] Dolphin launch failed: {e}")
+        _ex14_dolphin = None
+        pid = None
+
+    return _json_resp({"ok": True, "platform": plat, "dolphin_pid": pid})
+
+
+@app.route("/exercise14/stop", methods=["GET", "POST"])
+def ex14_stop():
+    global _ex14_running
+    with _ex14_lock:
+        _ex14_running = False
+    _srv.send_to_esp = False
+    _srv.esp_send("STOP")
+    _ex14_stop_dolphin()
+    _srv.set_hdmi(mode="off")
+    return _json_resp({"ok": True})
+
+
+@app.route("/exercise14/status")
+def ex14_status():
+    with _ex14_lock:
+        mode_copy = dict(_ex14_mode)
+    dolphin_alive = _ex14_dolphin is not None and _ex14_dolphin.poll() is None
+    return _json_resp({"running": _ex14_running, "dolphin_alive": dolphin_alive, **mode_copy})
+
+
+# =========================================================
 # SYSTEM INFO
 # =========================================================
 @app.route("/api/info")

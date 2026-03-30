@@ -41,6 +41,7 @@ const EXERCISES = [
   { id: 'ex11', name: 'Labyrinthe',                  cat: 'COP actif',    icon: '🌀',  preset_ok: true },
   { id: 'ex12', name: 'Plateforme + Vidéo',          cat: 'Distraction',  icon: '🎬',  preset_ok: true },
   { id: 'ex13', name: 'Pong COP',                    cat: 'COP actif',    icon: '🏓',  preset_ok: true },
+  { id: 'ex14', name: 'Wii Play (Dolphin)',           cat: 'Distraction',  icon: '🎮',  preset_ok: false },
 ];
 
 const SOT_CONDITIONS = {
@@ -663,6 +664,12 @@ function buildExConfigHTML(exId, ex) {
         🏓 Déplacez votre poids <b>gauche/droite</b> pour contrôler la raquette.<br>
         L'adversaire (IA) contrôle la raquette du haut. <b>Premier à 10 points gagne.</b>
       </div>`;
+  } else if (exId === 'ex14') {
+    specific = platformField + `
+      <div class="info-box mt-8" style="background:rgba(168,85,247,0.08);border:1px solid rgba(168,85,247,0.25);border-radius:8px;padding:10px;font-size:13px;color:#d8b4fe;">
+        🎮 Lance <b>Wii Play</b> en plein écran via Dolphin.<br>
+        La plateforme suit le mode sélectionné. Appuyez sur ■ STOP pour fermer le jeu.
+      </div>`;
   } else if (exId === 'ex12') {
     specific = platformField + `
       <div class="field"><label>Vidéo</label>
@@ -820,6 +827,7 @@ async function stopEx() {
   const exNum = parseInt(exId.replace('ex', ''));
   for (let i = 1; i <= 12; i++) api(`/exercise${i}/stop`);
   api('/exercise13/stop');
+  api('/exercise14/stop');
 
   if (State.exSession) {
     State.exSession.events.push({ t: Date.now(), e: 'stop' });
