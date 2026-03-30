@@ -877,12 +877,13 @@ def hdmi():
 <html>
 <head><meta charset="utf-8"/><title>HDMI</title></head>
 <body style="margin:0;padding:0;overflow:hidden;background:#000;cursor:none">
-<video id="vbg" playsinline muted autoplay loop style="position:fixed;inset:0;width:100vw;height:100vh;object-fit:cover;background:#000;display:none"></video>
+<video id="vbg" playsinline muted autoplay style="position:fixed;inset:0;width:100vw;height:100vh;object-fit:cover;background:#000;display:none"></video>
 <canvas id="c" style="position:fixed;inset:0;display:block"></canvas>
 <script>
 var canvas=document.getElementById("c");
 var ctx=canvas.getContext("2d");
 var vbg=document.getElementById("vbg");
+vbg.addEventListener('ended',function(){vbg.style.display='none';active_video_src='';});
 function resize(){canvas.width=window.innerWidth;canvas.height=window.innerHeight;}
 resize();window.onresize=resize;
 var offset=0,t0=Date.now();
@@ -909,7 +910,7 @@ function drawScoreBar(){var pct=Math.max(0,Math.min(1,hold_time/Math.max(0.01,go
 function updateVideoPlayback(){
   if(mode!=="video"){vbg.style.display="none";return;}
   vbg.style.display="block";
-  var src="/static/"+(video_file||"voiture1.mp4");
+  var src="/videos/"+(video_file||"voiture1.mp4");
   if(src!==active_video_src){active_video_src=src;vbg.src=src;try{vbg.load();}catch(e){}}
   if(vbg.paused){var p=vbg.play();if(p&&p.catch)p.catch(function(){});} 
 }
