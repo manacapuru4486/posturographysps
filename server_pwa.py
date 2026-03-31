@@ -1060,6 +1060,73 @@ def _patched_analyze_sot_csv(csv_path):
 
 _srv.analyze_sot_csv = _patched_analyze_sot_csv
 
+# =========================================================
+# PATCHED analyze_one_condition – lenient window + fallback
+# =========================================================
+def _patched_analyze_one_condition(dfc, cond_id):
+    """Replacement with:
+    - No strict analysis_end cutoff (use all data from analysis_start)
+    - Progressive fallback if strict window is too short
+    - Lower MIN_SAMPLES (5 instead of 10)
+    """
+    import numpy as _np, math as _math
+    cfg = _srv.SOT_PROTOCOL[cond_id]
+    if dfc.empty:
+        return None, None
+    dfc = dfc.sort_values("time").reset_index(drop=True)
+    t0    = float(dfc["time"].iloc[0])
+    t_rel = dfc["time"] - t0
+    start = float(cfg.get("analysis_start", 0))
+    end   = float(cfg.get("analysis_end", 9999))
+
+    # Primary window: analysis_start … analysis_end
+    win = dfc[(t_rel >= start) & (t_rel <= end)].copy()
+    # Fallback 1: remove strict end cutoff
+    if len(win) < 5:
+        win = dfc[t_rel >= start].copy()
+    # Fallback 2: use everything
+    if len(win) < 5:
+        win = dfc.copy()
+
+    MIN_SAMPLES = 5
+    if len(win) < MIN_SAMPLES:
+        return {
+            "condition": cond_id, "name": cfg["name"],
+            "analysis_window_s": [start, end],
+            "n": int(len(win)),
+            "error": f"Seulement {len(win)} echantillons (min {MIN_SAMPLES})"
+        }, win
+
+    x = win["cop_x_cm"].astype(float).to_numpy()
+    y = win["cop_y_cm"].astype(float).to_numpy()
+    duration_s = float(win["time"].iloc[-1] - win["time"].iloc[0])
+    if duration_s <= 0:
+        duration_s = float((len(win) - 1) * 0.02)
+    dx = _np.diff(x); dy = _np.diff(y)
+    seg = _np.sqrt(dx*dx + dy*dy)
+    path_length_cm  = float(_np.sum(seg))
+    mean_speed_cm_s = float(path_length_cm / duration_s) if duration_s > 0 else float("nan")
+    rms_r = float(_np.sqrt(_np.mean(x*x + y*y)))
+    cov = _np.cov(_np.vstack([x, y]))
+    eig = _np.linalg.eigvalsh(cov)
+    eig = _np.maximum(eig, 0.0)
+    CHI2_95_2DOF = 5.991
+    ellipse95_area = float(_math.pi * CHI2_95_2DOF * _math.sqrt(eig[0] * eig[1]))
+    stability_pct  = 100.0 * (1.0 - (rms_r / _srv.STAB_LIMIT_CM))
+    stability_pct  = float(max(0.0, min(100.0, stability_pct)))
+    actual_end = float(t_rel.iloc[-1]) if len(t_rel) > 0 else end
+    print(f"[ANALYZE] C{cond_id}: {len(win)} pts, "
+          f"t={start:.0f}..{actual_end:.1f}s, stability={stability_pct:.1f}%")
+    return {
+        "condition": cond_id, "name": cfg["name"],
+        "analysis_window_s": [start, min(end, actual_end)],
+        "n": int(len(win)), "duration_s": duration_s, "rms_r_cm": rms_r,
+        "path_length_cm": path_length_cm, "mean_speed_cm_s": mean_speed_cm_s,
+        "ellipse95_area_cm2": ellipse95_area, "stability_pct": stability_pct,
+    }, win
+
+_srv.analyze_one_condition = _patched_analyze_one_condition
+
 # Also expose a debug endpoint for SOT CSV inspection
 @app.route("/sot/csv-debug")
 def sot_csv_debug():
