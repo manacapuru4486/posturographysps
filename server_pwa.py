@@ -1451,6 +1451,51 @@ def _ex14_stop_dolphin():
         _ex14_dolphin = None
 
 
+def _ex14_build_env():
+    """Build an env dict suitable for launching Dolphin (flatpak GUI app)."""
+    env = os.environ.copy()
+
+    # X display
+    if not env.get("DISPLAY"):
+        env["DISPLAY"] = ":0"
+
+    # XDG_RUNTIME_DIR is mandatory for flatpak D-Bus/portal access.
+    # Auto-detect from the UID of the game file owner.
+    if not env.get("XDG_RUNTIME_DIR"):
+        try:
+            import pwd as _pwd
+            uid  = os.stat(_DOLPHIN_GAME).st_uid
+            xdg  = f"/run/user/{uid}"
+        except Exception:
+            uid  = 1000
+            xdg  = "/run/user/1000"
+        env["XDG_RUNTIME_DIR"] = xdg
+        print(f"[EX14] XDG_RUNTIME_DIR set to {xdg}")
+
+    # XAUTHORITY – X11 auth cookie (needed when running from a service/daemon)
+    if not env.get("XAUTHORITY"):
+        candidates = []
+        try:
+            import pwd as _pwd
+            uid  = os.stat(_DOLPHIN_GAME).st_uid
+            home = _pwd.getpwuid(uid).pw_dir
+            candidates.append(os.path.join(home, ".Xauthority"))
+        except Exception:
+            pass
+        candidates.append(os.path.expanduser("~/.Xauthority"))
+        candidates.append("/tmp/.Xauthority")
+        for c in candidates:
+            if os.path.isfile(c):
+                env["XAUTHORITY"] = c
+                print(f"[EX14] XAUTHORITY set to {c}")
+                break
+
+    return env
+
+
+_dolphin_log_path = "/tmp/dolphin_ex14.log"
+
+
 @app.route("/exercise14/set", methods=["GET", "POST"])
 def ex14_set():
     if request.method == "POST":
@@ -1490,17 +1535,16 @@ def ex14_start():
         _srv.esp_send("STOP")
 
     # Launch Dolphin fullscreen
-    env = os.environ.copy()
-    env["DISPLAY"] = ":0"
+    env  = _ex14_build_env()
+    cmd  = ["flatpak", "run", "org.DolphinEmu.dolphin-emu",
+            "-b", "-e", _DOLPHIN_GAME, "-f"]
+    print(f"[EX14] Launching: {' '.join(cmd)}")
+    print(f"[EX14] DISPLAY={env.get('DISPLAY')}  XDG_RUNTIME_DIR={env.get('XDG_RUNTIME_DIR')}")
     try:
-        _ex14_dolphin = subprocess.Popen(
-            ["flatpak", "run", "org.DolphinEmu.dolphin-emu",
-             "--batch", "--exec", _DOLPHIN_GAME, "--fullscreen"],
-            env=env,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
+        logf = open(_dolphin_log_path, "w")
+        _ex14_dolphin = subprocess.Popen(cmd, env=env, stdout=logf, stderr=logf)
         pid = _ex14_dolphin.pid
+        print(f"[EX14] Dolphin PID={pid}")
     except Exception as e:
         print(f"[EX14] Dolphin launch failed: {e}")
         _ex14_dolphin = None
@@ -1526,7 +1570,20 @@ def ex14_status():
     with _ex14_lock:
         mode_copy = dict(_ex14_mode)
     dolphin_alive = _ex14_dolphin is not None and _ex14_dolphin.poll() is None
-    return _json_resp({"running": _ex14_running, "dolphin_alive": dolphin_alive, **mode_copy})
+    returncode = _ex14_dolphin.returncode if _ex14_dolphin is not None else None
+    return _json_resp({"running": _ex14_running, "dolphin_alive": dolphin_alive,
+                       "returncode": returncode, **mode_copy})
+
+
+@app.route("/exercise14/log")
+def ex14_log():
+    """Return last 100 lines of Dolphin launch log for debugging."""
+    try:
+        with open(_dolphin_log_path, "r") as f:
+            lines = f.readlines()
+        return "<pre style='font-size:13px'>" + "".join(lines[-100:]) + "</pre>"
+    except FileNotFoundError:
+        return "No log yet – start exercise14 first.", 404
 
 
 # =========================================================
