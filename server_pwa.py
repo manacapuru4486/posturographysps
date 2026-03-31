@@ -1441,13 +1441,20 @@ def _ex14_platform_loop():
 
 def _ex14_stop_dolphin():
     global _ex14_dolphin
+    # 1. flatpak kill sends SIGTERM inside the sandbox (kills the real process)
+    try:
+        subprocess.call(["flatpak", "kill", "org.DolphinEmu.dolphin-emu"],
+                        timeout=3)
+    except Exception as e:
+        print(f"[EX14] flatpak kill error: {e}")
+    # 2. Also terminate the wrapper Popen we hold
     if _ex14_dolphin is not None:
         try:
             _ex14_dolphin.terminate()
             try:    _ex14_dolphin.wait(timeout=3)
             except subprocess.TimeoutExpired: _ex14_dolphin.kill()
         except Exception as e:
-            print(f"[EX14] Dolphin stop error: {e}")
+            print(f"[EX14] Dolphin wrapper stop error: {e}")
         _ex14_dolphin = None
 
 
