@@ -304,6 +304,15 @@ async function sotStartFirst() {
   // Ensure tare + center first
   if (!State.status.tare_ready) { toast('❌ Tare non faite', 'err'); return; }
   if (!State.status.offset_ready) { toast('❌ Centrage non fait', 'err'); return; }
+  // Send current patient to server so PDF report includes identity
+  if (State.currentPatient) {
+    await api('/sot/patient', { method: 'POST', body: JSON.stringify({
+      nom: State.currentPatient.nom || '',
+      prenom: State.currentPatient.prenom || '',
+      age: State.currentPatient.age || '',
+      objectif: State.currentPatient.objectif || ''
+    })});
+  }
   State.sotCondition = 1;
   State.sotRunning = true;
   const cond = SOT_CONDITIONS[1];

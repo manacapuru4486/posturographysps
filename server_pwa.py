@@ -497,6 +497,13 @@ def _patched_sot_start(c):
         with _srv.lock:
             _srv.latest["offset_ready"] = True
 
+    # Stop any previous logger thread BEFORE changing the condition
+    _sot_bg_finish()
+
+    # Set the condition BEFORE starting the logger so the very first row
+    # already has the correct condition value (avoids condition=N-1 contamination)
+    _srv.start_condition(c)
+
     # Open the log file ourselves (do NOT rely on control-loop start_log)
     os.makedirs("logs", exist_ok=True)
     log_path = datetime.now().strftime("logs/sot_%Y%m%d_%H%M%S.csv")
@@ -505,10 +512,9 @@ def _patched_sot_start(c):
     _srv.log_file         = None       # prevent control loop from writing
     _srv.log_writer       = None       # (if log_writer is None, control loop skips write)
 
-    # Start dedicated background logger
+    # Start dedicated background logger (condition already correct)
     _sot_bg_start(log_path)
 
-    _srv.start_condition(c)
     print(f"[SOT] Condition {c} started – logging to {log_path} "
           f"(tare_ready={_srv.tare_ready}, offset_ready={_srv.offset_ready})")
     return f"STARTED CONDITION {c}\n"
@@ -532,8 +538,8 @@ def _patched_sot_next():
         _srv.logging_active = False
         _srv.finalize_sot_and_analyze()
         return "SOT FINISHED\n"
-    _srv.stop_condition()
-    _srv.start_condition(_srv.sot_condition)   # updates current_condition
+    # Set new condition BEFORE stop so logger has zero gap with wrong condition
+    _srv.start_condition(_srv.sot_condition)
     return f"NEXT: CONDITION {_srv.sot_condition}\n"
 
 
@@ -547,6 +553,15 @@ app.view_functions["sot_start"]   = _patched_sot_start
 app.view_functions["sot_stop"]    = _patched_sot_stop
 app.view_functions["sot_next"]    = _patched_sot_next
 app.view_functions["sot_restart"] = _patched_sot_restart
+
+# ---- Patient info for SOT report ----
+_sot_patient = {}   # set by /sot/patient before starting
+
+@app.route("/sot/patient", methods=["POST"])
+def sot_patient_set():
+    global _sot_patient
+    _sot_patient = _body()
+    return _json_resp({"ok": True})
 
 
 @app.route("/sot/state")
@@ -639,7 +654,8 @@ def _get_fonts():
     return _FONT_NAME, _FONT_BOLD
 
 
-def _build_sot_pdf(pdf_path, source_csv, results_by_c, img_paths, debug_info=None):
+def _build_sot_pdf(pdf_path, source_csv, results_by_c, img_paths,
+                   patient_info=None, ces=None, debug_info=None):
     """
     Professional clinical SOT report — clean French encoding.
     Inspired by Framiral Multitest layout.
@@ -718,6 +734,39 @@ def _build_sot_pdf(pdf_path, source_csv, results_by_c, img_paths, debug_info=Non
         f"Genere le {datetime.now().strftime('%d/%m/%Y a %H:%M')}  |  Fichier : {os.path.basename(source_csv)}",
         style_subtitle
     ))
+    story.append(Spacer(1, 0.3*RL_CM))
+
+    # ---- Patient info + CES banner ----
+    pi = patient_info or {}
+    pat_nom    = f"{pi.get('prenom','')} {pi.get('nom','')}".strip()
+    pat_age    = f"{pi.get('age','')} ans" if pi.get('age') else ""
+    pat_obj    = pi.get('objectif', '')
+    pat_left   = "Patient : " + (pat_nom if pat_nom else "–")
+    if pat_age:
+        pat_left += f"   |   Age : {pat_age}"
+    if pat_obj:
+        pat_left += f"   |   Objectif : {pat_obj}"
+
+    ces_str = f"CES : {ces:.1f} %" if ces is not None else "CES : –"
+    ces_color = colors.HexColor(
+        "#16a34a" if (ces or 0) >= 75 else ("#ca8a04" if (ces or 0) >= 50 else "#dc2626")
+    )
+    style_ces = ParagraphStyle(
+        "sps_ces", fontName=fb, fontSize=14,
+        textColor=ces_color, alignment=TA_RIGHT
+    )
+    banner_data = [[Paragraph(pat_left, style_body), Paragraph(ces_str, style_ces)]]
+    banner = Table(banner_data, colWidths=[W_avail * 0.65, W_avail * 0.35])
+    banner.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#f1f5f9")),
+        ("ROUNDEDCORNERS", [4]),
+        ("TOPPADDING",    (0, 0), (-1, -1), 7),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
+        ("LEFTPADDING",   (0, 0), (0, -1), 10),
+        ("RIGHTPADDING",  (-1, 0), (-1, -1), 10),
+        ("VALIGN",        (0, 0), (-1, -1), "MIDDLE"),
+    ]))
+    story.append(banner)
     story.append(Spacer(1, 0.4*RL_CM))
 
     # ---- Protocol reminder ----
@@ -1038,8 +1087,12 @@ def _patched_analyze_sot_csv(csv_path):
         if res is None:
             continue
         results_by_c[c] = res
-        if win is not None and len(win) >= 10 and "error" not in res:
+        if win is not None and len(win) >= 5 and "error" not in res:
             img_paths[c] = _srv.plot_statok_png(win, res, out_dir)
+
+    # Composite Equilibrium Score: mean of valid stability scores
+    valid_stabs = [r["stability_pct"] for r in results_by_c.values() if "error" not in r]
+    ces = round(sum(valid_stabs) / len(valid_stabs), 1) if valid_stabs else None
 
     json_path = os.path.join(out_dir, "results.json")
     payload = {
@@ -1047,6 +1100,8 @@ def _patched_analyze_sot_csv(csv_path):
         "generated_at": datetime.now().isoformat(),
         "protocol": _srv.SOT_PROTOCOL,
         "results": [results_by_c[k] for k in sorted(results_by_c.keys())],
+        "ces": ces,
+        "patient": dict(_sot_patient),
         "csv_rows": csv_rows,
         "csv_conditions": cond_dist,
     }
@@ -1055,6 +1110,7 @@ def _patched_analyze_sot_csv(csv_path):
 
     pdf_path = os.path.join(out_dir, "report.pdf")
     _build_sot_pdf(pdf_path, csv_path, results_by_c, img_paths,
+                   patient_info=dict(_sot_patient), ces=ces,
                    debug_info={"csv_rows": csv_rows, "csv_conditions": cond_dist})
     return out_dir, json_path, pdf_path
 
