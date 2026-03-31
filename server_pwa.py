@@ -1366,7 +1366,7 @@ _ex14_mode = {
 }
 _ex14_lock = threading.Lock()
 
-_DOLPHIN_GAME = "/home/sylvain/WII/WiiPlay.rvz"
+_DOLPHIN_GAME = "/home/sylvain/wii/wiiplay.rvz"
 
 
 def _ex14_platform_loop():
