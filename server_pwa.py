@@ -1496,6 +1496,32 @@ def _ex14_build_env():
 _dolphin_log_path = "/tmp/dolphin_ex14.log"
 
 
+def _ex14_set_dolphin_fullscreen():
+    """Write Fullscreen=True into Dolphin's Dolphin.ini before launch.
+    The -f / --fullscreen CLI flag does not exist in the flatpak build;
+    fullscreen must be set via the config file."""
+    import configparser, pwd as _pwd
+    try:
+        uid  = os.stat(_DOLPHIN_GAME).st_uid
+        home = _pwd.getpwuid(uid).pw_dir
+    except Exception:
+        home = os.path.expanduser("~")
+    cfg_path = os.path.join(home, ".var", "app",
+                            "org.DolphinEmu.dolphin-emu",
+                            "config", "dolphin-emu", "Dolphin.ini")
+    cfg = configparser.RawConfigParser()
+    cfg.optionxform = str   # preserve key case (Dolphin is case-sensitive)
+    if os.path.isfile(cfg_path):
+        cfg.read(cfg_path)
+    if not cfg.has_section("Display"):
+        cfg.add_section("Display")
+    cfg.set("Display", "Fullscreen", "True")
+    os.makedirs(os.path.dirname(cfg_path), exist_ok=True)
+    with open(cfg_path, "w") as f:
+        cfg.write(f)
+    print(f"[EX14] Dolphin.ini updated: {cfg_path}")
+
+
 @app.route("/exercise14/set", methods=["GET", "POST"])
 def ex14_set():
     if request.method == "POST":
@@ -1535,9 +1561,12 @@ def ex14_start():
         _srv.esp_send("STOP")
 
     # Launch Dolphin fullscreen
+    # (-f / --fullscreen CLI flag does not exist in this flatpak build;
+    #  fullscreen is set via Dolphin.ini instead)
+    _ex14_set_dolphin_fullscreen()
     env  = _ex14_build_env()
     cmd  = ["flatpak", "run", "org.DolphinEmu.dolphin-emu",
-            "-b", "-e", _DOLPHIN_GAME, "-f"]
+            "-b", "-e", _DOLPHIN_GAME]
     print(f"[EX14] Launching: {' '.join(cmd)}")
     print(f"[EX14] DISPLAY={env.get('DISPLAY')}  XDG_RUNTIME_DIR={env.get('XDG_RUNTIME_DIR')}")
     try:
