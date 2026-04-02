@@ -290,6 +290,7 @@ function updateSOTButtons() {
       ? `C${State.sotCondition}/6 – En cours`
       : `C${State.sotCondition}/6 – Terminée`;
   }
+  _sotUpdateOptoPanel();
 }
 
 function updateSOTLive(s) {
@@ -336,14 +337,16 @@ async function sotNext() {
   const btnNext = document.getElementById('sot-btn-next');
   if (btnNext) btnNext.disabled = true;
   stopSOTTimer();
-  const r = await api('/sot/next');
+
+  // Check minimum time first (send to server to validate)
+  const rCheck = await api('/sot/next');
   if (btnNext) btnNext.disabled = false;
-  if (typeof r !== 'string') {
+  if (typeof rCheck !== 'string') {
     toast('Erreur communication serveur sur SUIVANT', 'err');
     return;
   }
-  if (r.startsWith('WAIT:')) {
-    const msg = r.replace('WAIT:', '').trim();
+  if (rCheck.startsWith('WAIT:')) {
+    const msg = rCheck.replace('WAIT:', '').trim();
     toast(msg || 'Condition en cours', 'err', 3500);
     const info = await api('/sot/info');
     if (info && typeof info === 'object' && typeof info.remaining === 'number') {
@@ -353,7 +356,7 @@ async function sotNext() {
     updateSOTButtons();
     return;
   }
-  if (typeof r === 'string' && r.includes('FINISHED')) {
+  if (typeof rCheck === 'string' && rCheck.includes('FINISHED')) {
     State.sotCondition = 7;
     State.sotRunning = false;
     renderSOTConditions();
@@ -361,18 +364,98 @@ async function sotNext() {
     toast('✅ SOT terminé – rapport disponible', 'ok', 4000);
     return;
   }
-  const m = r.match(/NEXT:\s*CONDITION\s+(\d+)/i);
+  const m = rCheck.match(/NEXT:\s*CONDITION\s+(\d+)/i);
   if (!m) {
     toast('Reponse inattendue du serveur sur SUIVANT', 'err');
     return;
   }
-  State.sotCondition = Number(m[1]);
+  const nextCond = Number(m[1]);
+
+  // Before condition 4: show foam tare modal
+  if (nextCond === 4) {
+    State._sotPendingCondition = nextCond;
+    State._sotPendingResponse  = rCheck;
+    _sotShowFoamModal();
+    return;
+  }
+
+  _sotApplyNext(nextCond);
+}
+
+function _sotApplyNext(condNum) {
+  State.sotCondition = condNum;
   State.sotRunning = true;
-  const cond = SOT_CONDITIONS[State.sotCondition];
+  const cond = SOT_CONDITIONS[condNum];
   if (cond) startSOTTimer(cond.duration);
   renderSOTConditions();
   updateSOTButtons();
-  toast(`Condition ${State.sotCondition} – ${cond ? cond.name : ''}`, 'ok');
+  _sotUpdateOptoPanel();
+  toast(`Condition ${condNum} – ${cond ? cond.name : ''}`, 'ok');
+}
+
+/* ---- Foam modal ---- */
+function _sotShowFoamModal() {
+  const modal = document.getElementById('sot-foam-modal');
+  if (!modal) return;
+  modal.style.display = 'flex';
+  document.getElementById('sot-foam-tare-status').textContent = '';
+  document.getElementById('sot-foam-confirm-btn').disabled = true;
+  document.getElementById('sot-foam-tare-btn').disabled = false;
+}
+
+async function sotFoamDoTare() {
+  const btn  = document.getElementById('sot-foam-tare-btn');
+  const stat = document.getElementById('sot-foam-tare-status');
+  const conf = document.getElementById('sot-foam-confirm-btn');
+  if (btn) btn.disabled = true;
+  if (stat) stat.textContent = 'Tare en cours…';
+  await api('/tare');
+  await new Promise(r => setTimeout(r, 800));
+  if (stat) stat.textContent = '✅ Tare effectuée – vous pouvez démarrer C4';
+  if (conf) conf.disabled = false;
+}
+
+function sotFoamCancel() {
+  document.getElementById('sot-foam-modal').style.display = 'none';
+  // Re-enable SUIVANT button so operator can retry
+  const btn = document.getElementById('sot-btn-next');
+  if (btn) btn.disabled = false;
+  State.sotRunning = false;
+  updateSOTButtons();
+}
+
+function sotFoamConfirm() {
+  document.getElementById('sot-foam-modal').style.display = 'none';
+  const cond = State._sotPendingCondition || 4;
+  _sotApplyNext(cond);
+}
+
+/* ---- Opto controls ---- */
+let _sotOptoDir   = 'down';
+let _sotOptoSpeed = 6;
+
+function _sotUpdateOptoPanel() {
+  const panel = document.getElementById('sot-opto-panel');
+  if (!panel) return;
+  const active = State.sotRunning && (State.sotCondition === 3 || State.sotCondition === 6);
+  panel.style.display = active ? 'block' : 'none';
+  document.getElementById('sot-opto-speed-val').textContent = _sotOptoSpeed;
+  ['up','down','left','right'].forEach(d => {
+    const el = document.getElementById('sot-opto-' + d);
+    if (el) el.style.fontWeight = d === _sotOptoDir ? '800' : '400';
+  });
+}
+
+async function sotOptoDir(dir) {
+  _sotOptoDir = dir;
+  _sotUpdateOptoPanel();
+  await api(`/sot/opto?direction=${dir}&speed=${_sotOptoSpeed}`);
+}
+
+async function sotOptoSpeed(delta) {
+  _sotOptoSpeed = Math.max(1, Math.min(30, _sotOptoSpeed + delta));
+  document.getElementById('sot-opto-speed-val').textContent = _sotOptoSpeed;
+  await api(`/sot/opto?direction=${_sotOptoDir}&speed=${_sotOptoSpeed}`);
 }
 
 async function sotStop() {

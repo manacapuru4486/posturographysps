@@ -151,6 +151,24 @@
         <a class="btn btn-green btn-full" id="sot-btn-report" href="/sot/report.pdf" target="_blank" style="display:none">📄 Télécharger rapport PDF</a>
       </div>
 
+      <!-- Opto controls (visible during conditions 3 and 6) -->
+      <div class="card mt-12" id="sot-opto-panel" style="display:none">
+        <div class="card-title" style="margin-bottom:8px">🌀 Optocinetique — Contrôle</div>
+        <div class="flex gap-8 items-center flex-wrap">
+          <span style="font-size:13px;font-weight:600;min-width:60px">Sens :</span>
+          <button class="btn btn-ghost btn-sm" id="sot-opto-up"    onclick="sotOptoDir('up')">▲ Haut</button>
+          <button class="btn btn-ghost btn-sm" id="sot-opto-down"  onclick="sotOptoDir('down')">▼ Bas</button>
+          <button class="btn btn-ghost btn-sm" id="sot-opto-left"  onclick="sotOptoDir('left')">◄ Gauche</button>
+          <button class="btn btn-ghost btn-sm" id="sot-opto-right" onclick="sotOptoDir('right')">► Droite</button>
+        </div>
+        <div class="flex gap-8 items-center mt-8">
+          <span style="font-size:13px;font-weight:600;min-width:60px">Vitesse :</span>
+          <button class="btn btn-ghost btn-sm" onclick="sotOptoSpeed(-1)">−</button>
+          <span id="sot-opto-speed-val" style="min-width:28px;text-align:center;font-weight:700">6</span>
+          <button class="btn btn-ghost btn-sm" onclick="sotOptoSpeed(+1)">+</button>
+        </div>
+      </div>
+
       <!-- Live COP -->
       <div class="card mt-12">
         <div class="card-title">COP en direct</div>
@@ -588,5 +606,22 @@ window.renderMore = function() {
 </script>
 
 <script src="/static/app.js"></script>
+
+<!-- ==================== FOAM TARE MODAL ==================== -->
+<div id="sot-foam-modal" style="display:none;position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,0.6);align-items:center;justify-content:center;">
+  <div style="background:#fff;border-radius:16px;padding:28px 24px;max-width:380px;width:90%;box-shadow:0 8px 40px rgba(0,0,0,0.35);">
+    <div style="font-size:20px;font-weight:800;margin-bottom:8px;color:#0f172a">🟫 Installation mousse</div>
+    <p style="font-size:14px;color:#334155;margin-bottom:20px;line-height:1.5">
+      Installez la mousse sous le patient, puis effectuez une nouvelle tare avant de démarrer la condition 4 (INSTABLE).
+    </p>
+    <button class="btn btn-blue btn-full mb-8" id="sot-foam-tare-btn" onclick="sotFoamDoTare()">⚖️ Faire la tare (mousse + patient)</button>
+    <div id="sot-foam-tare-status" style="font-size:13px;color:#64748b;text-align:center;min-height:20px;margin-bottom:16px"></div>
+    <div class="flex gap-8">
+      <button class="btn btn-ghost btn-full" onclick="sotFoamCancel()">Annuler</button>
+      <button class="btn btn-green btn-full" id="sot-foam-confirm-btn" disabled onclick="sotFoamConfirm()">▶ Démarrer C4</button>
+    </div>
+  </div>
+</div>
+
 </body>
 </html>

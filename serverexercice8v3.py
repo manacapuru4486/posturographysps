@@ -496,6 +496,11 @@ def stop_log():
 # OPTOCINETIC HDMI (Chromium lancÃ© une seule fois)
 # ==========================================================
 opto_process = None
+
+# SOT opto settings (used for conditions 3 and 6)
+_sot_opto_dir   = "down"
+_sot_opto_speed = 6
+
 hdmi_state = {
     "mode": "off",
     "direction": "right",
@@ -666,7 +671,7 @@ def start_condition(c):
         send_to_esp = False
         esp_send("AUTO:0")
     if cond["opto"]:
-        start_opto()
+        start_opto(direction=_sot_opto_dir, speed=_sot_opto_speed)
     else:
         start_black_screen()
 
@@ -867,6 +872,24 @@ def sot_next():
 def sot_restart():
     start_condition(sot_condition)
     return f"RESTART CONDITION {sot_condition}\n"
+
+@app.route("/sot/opto")
+def sot_opto_set():
+    global _sot_opto_dir, _sot_opto_speed
+    d = request.args.get("direction")
+    s = request.args.get("speed")
+    if d and d in ("up", "down", "left", "right"):
+        _sot_opto_dir = d
+    if s is not None:
+        try:
+            _sot_opto_speed = max(1, min(30, int(s)))
+        except ValueError:
+            pass
+    # If opto condition is currently running, update live
+    if sot_condition in (3, 6):
+        start_opto(direction=_sot_opto_dir, speed=_sot_opto_speed)
+    return Response(json.dumps({"direction": _sot_opto_dir, "speed": _sot_opto_speed}),
+                    mimetype="application/json")
 
 @app.route("/hdmi/mode")
 def hdmi_mode_route():
