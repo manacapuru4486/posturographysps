@@ -469,7 +469,8 @@ def esp_send(line: str):
 
 # ==========================================================
 # LOGGING SOT
-# ==========================================================`r`ndef start_log():
+# ==========================================================
+def start_log():
     global logging_active, log_file, log_writer, current_log_path
     os.makedirs("logs", exist_ok=True)
     fname = datetime.now().strftime("logs/sot_%Y%m%d_%H%M%S.csv")
@@ -1081,7 +1082,13 @@ async function doCenter() {
 }
 
 async function startSOT() {
-  await fetch('/sot/start/1');
+  const r = await fetch('/sot/start/1');
+  const t = await r.text();
+  if (!t.includes('STARTED CONDITION 1')) {
+    document.getElementById('timer').textContent = 'ERREUR DEMARRAGE';
+    document.getElementById('timer').className = 'timer-idle';
+    return;
+  }
   sotActive = true;
   document.getElementById('btn_start').disabled = true;
   document.getElementById('btn_next').disabled = false;
@@ -1093,6 +1100,11 @@ async function startSOT() {
 async function nextCond() {
   const r = await fetch('/sot/next');
   const t = await r.text();
+  if (t.startsWith('WAIT:')) {
+    document.getElementById('timer').textContent = t.replace('WAIT:','').trim();
+    document.getElementById('timer').className = 'timer-running';
+    return;
+  }
   if (t.includes('FINISHED')) {
     sotActive = false;
     stopPolling();
