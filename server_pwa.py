@@ -628,6 +628,17 @@ app.view_functions["sot_stop"]    = _patched_sot_stop
 app.view_functions["sot_next"]    = _patched_sot_next
 app.view_functions["sot_restart"] = _patched_sot_restart
 
+# Checks if current condition met its minimum time WITHOUT advancing or moving platform.
+# Used by the foam modal so the platform stays still until after the tare.
+@app.route("/sot/check_ready")
+def sot_check_ready():
+    current = int(_srv.sot_condition)
+    if current in _srv.SOT_CONDITIONS:
+        ready, wait_msg = _sot_check_condition_ready(current)
+        if not ready:
+            return wait_msg
+    return "READY\n"
+
 # ---- Patient info for SOT report ----
 _sot_patient = {}   # set by /sot/patient before starting
 

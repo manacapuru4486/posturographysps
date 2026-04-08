@@ -338,15 +338,38 @@ async function sotNext() {
   if (btnNext) btnNext.disabled = true;
   stopSOTTimer();
 
-  // Check minimum time first (send to server to validate)
-  const rCheck = await api('/sot/next');
-  if (btnNext) btnNext.disabled = false;
-  if (typeof rCheck !== 'string') {
-    toast('Erreur communication serveur sur SUIVANT', 'err');
+  // C3 → C4 : vérifier le timing SANS démarrer la plateforme,
+  // puis montrer la modale mousse. /sot/next n'est appelé qu'APRÈS la tare.
+  if (State.sotCondition === 3) {
+    const rReady = await api('/sot/check_ready');
+    if (btnNext) btnNext.disabled = false;
+    if (typeof rReady !== 'string') {
+      toast('Erreur communication serveur', 'err'); return;
+    }
+    if (rReady.startsWith('WAIT:')) {
+      const msg = rReady.replace('WAIT:', '').trim();
+      toast(msg || 'Condition en cours', 'err', 3500);
+      const info = await api('/sot/info');
+      if (info && typeof info === 'object' && typeof info.remaining === 'number') {
+        State.sotRunning = true;
+        startSOTTimer(Math.max(1, Math.ceil(info.remaining)));
+      }
+      updateSOTButtons();
+      return;
+    }
+    // C3 terminée, plateforme toujours arrêtée → modale mousse
+    _sotShowFoamModal();
     return;
   }
-  if (rCheck.startsWith('WAIT:')) {
-    const msg = rCheck.replace('WAIT:', '').trim();
+
+  // Flux normal pour toutes les autres conditions
+  const r = await api('/sot/next');
+  if (btnNext) btnNext.disabled = false;
+  if (typeof r !== 'string') {
+    toast('Erreur communication serveur sur SUIVANT', 'err'); return;
+  }
+  if (r.startsWith('WAIT:')) {
+    const msg = r.replace('WAIT:', '').trim();
     toast(msg || 'Condition en cours', 'err', 3500);
     const info = await api('/sot/info');
     if (info && typeof info === 'object' && typeof info.remaining === 'number') {
@@ -356,7 +379,7 @@ async function sotNext() {
     updateSOTButtons();
     return;
   }
-  if (typeof rCheck === 'string' && rCheck.includes('FINISHED')) {
+  if (r.includes('FINISHED')) {
     State.sotCondition = 7;
     State.sotRunning = false;
     renderSOTConditions();
@@ -364,22 +387,9 @@ async function sotNext() {
     toast('✅ SOT terminé – rapport disponible', 'ok', 4000);
     return;
   }
-  const m = rCheck.match(/NEXT:\s*CONDITION\s+(\d+)/i);
-  if (!m) {
-    toast('Reponse inattendue du serveur sur SUIVANT', 'err');
-    return;
-  }
-  const nextCond = Number(m[1]);
-
-  // Before condition 4: show foam tare modal
-  if (nextCond === 4) {
-    State._sotPendingCondition = nextCond;
-    State._sotPendingResponse  = rCheck;
-    _sotShowFoamModal();
-    return;
-  }
-
-  _sotApplyNext(nextCond);
+  const m = r.match(/NEXT:\s*CONDITION\s+(\d+)/i);
+  if (!m) { toast('Reponse inattendue du serveur sur SUIVANT', 'err'); return; }
+  _sotApplyNext(Number(m[1]));
 }
 
 function _sotApplyNext(condNum) {
@@ -424,10 +434,16 @@ function sotFoamCancel() {
   updateSOTButtons();
 }
 
-function sotFoamConfirm() {
+async function sotFoamConfirm() {
   document.getElementById('sot-foam-modal').style.display = 'none';
-  const cond = State._sotPendingCondition || 4;
-  _sotApplyNext(cond);
+  // C'est ici que /sot/next est appelé → start_condition(4) → plateforme démarre
+  const r = await api('/sot/next');
+  if (typeof r === 'string') {
+    const m = r.match(/NEXT:\s*CONDITION\s+(\d+)/i);
+    _sotApplyNext(m ? Number(m[1]) : 4);
+  } else {
+    _sotApplyNext(4);
+  }
 }
 
 /* ---- Opto controls ---- */
