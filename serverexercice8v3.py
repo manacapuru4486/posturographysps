@@ -79,12 +79,12 @@ INVERT_Y_CMD = True
 # CONDITIONS SOT
 # ==========================================================
 SOT_CONDITIONS = {
-    1: {"name": "EO STABLE", "duration": 20, "plateau": "stable", "vision": "EO", "opto": False},
-    2: {"name": "EC STABLE", "duration": 20, "plateau": "stable", "vision": "EC", "opto": False},
-    3: {"name": "EO OPTO", "duration": 35, "plateau": "stable", "vision": "EO", "opto": True, "analysis_start": 15},
-    4: {"name": "EO INSTABLE", "duration": 20, "plateau": "auto", "vision": "EO", "opto": False},
-    5: {"name": "EC INSTABLE", "duration": 20, "plateau": "auto", "vision": "EC", "opto": False},
-    6: {"name": "OPTO INSTABLE", "duration": 35, "plateau": "auto", "vision": "OPTO", "opto": True, "analysis_start": 15},
+    1: {"name": "EO STABLE",    "duration": 20, "plateau": "stable", "vision": "EO",   "opto": False},
+    2: {"name": "EC STABLE",    "duration": 20, "plateau": "stable", "vision": "EC",   "opto": False},
+    3: {"name": "EO OPTO",      "duration": 35, "plateau": "stable", "vision": "EO",   "opto": True, "analysis_start": 15},
+    4: {"name": "EO INSTABLE",  "duration": 20, "plateau": "stable", "vision": "EO",   "opto": False},
+    5: {"name": "EC INSTABLE",  "duration": 20, "plateau": "stable", "vision": "EC",   "opto": False},
+    6: {"name": "OPTO INSTABLE","duration": 35, "plateau": "stable", "vision": "OPTO", "opto": True, "analysis_start": 15},
 }
 
 # ==========================================================
