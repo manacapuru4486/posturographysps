@@ -612,13 +612,19 @@ window.renderMore = function() {
   <div style="background:#fff;border-radius:16px;padding:28px 24px;max-width:380px;width:90%;box-shadow:0 8px 40px rgba(0,0,0,0.35);">
     <div style="font-size:20px;font-weight:800;margin-bottom:8px;color:#0f172a">🟫 Installation mousse</div>
     <p style="font-size:14px;color:#334155;margin-bottom:20px;line-height:1.5">
-      Installez la mousse sous le patient, puis effectuez une nouvelle tare avant de démarrer la condition 4 (INSTABLE).
+      Procédure recommandée après C3 :<br>
+      1) Faites descendre le patient.<br>
+      2) Placez la mousse sur la plateforme et faites la tare (mousse seule).<br>
+      3) Faites remonter le patient immobile puis recadrez le centre.<br>
+      4) Démarrez C4.
     </p>
-    <button class="btn btn-blue btn-full mb-8" id="sot-foam-tare-btn" onclick="sotFoamDoTare()">⚖️ Faire la tare (mousse + patient)</button>
+    <button class="btn btn-blue btn-full mb-8" id="sot-foam-tare-btn" onclick="sotFoamDoTare()">⚖️ 1) Tare mousse (patient DESCENDU)</button>
     <div id="sot-foam-tare-status" style="font-size:13px;color:#64748b;text-align:center;min-height:20px;margin-bottom:16px"></div>
+    <button class="btn btn-blue btn-full mb-8" id="sot-foam-center-btn" disabled onclick="sotFoamDoCenter()">🎯 2) Recentrer (patient immobile sur mousse)</button>
+    <div id="sot-foam-center-status" style="font-size:13px;color:#64748b;text-align:center;min-height:20px;margin-bottom:16px"></div>
     <div class="flex gap-8">
       <button class="btn btn-ghost btn-full" onclick="sotFoamCancel()">Annuler</button>
-      <button class="btn btn-green btn-full" id="sot-foam-confirm-btn" disabled onclick="sotFoamConfirm()">▶ Démarrer C4</button>
+      <button class="btn btn-green btn-full" id="sot-foam-confirm-btn" disabled onclick="sotFoamConfirm()">▶ 3) Démarrer C4</button>
     </div>
   </div>
 </div>

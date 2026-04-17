@@ -409,19 +409,43 @@ function _sotShowFoamModal() {
   if (!modal) return;
   modal.style.display = 'flex';
   document.getElementById('sot-foam-tare-status').textContent = '';
+  document.getElementById('sot-foam-center-status').textContent = '';
   document.getElementById('sot-foam-confirm-btn').disabled = true;
+  document.getElementById('sot-foam-center-btn').disabled = true;
   document.getElementById('sot-foam-tare-btn').disabled = false;
 }
 
 async function sotFoamDoTare() {
   const btn  = document.getElementById('sot-foam-tare-btn');
   const stat = document.getElementById('sot-foam-tare-status');
-  const conf = document.getElementById('sot-foam-confirm-btn');
+  const centerBtn = document.getElementById('sot-foam-center-btn');
   if (btn) btn.disabled = true;
   if (stat) stat.textContent = 'Tare en cours…';
-  await api('/tare');
+  const r = await api('/sot/foam_tare');
+  if (typeof r === 'string' && r.startsWith('ERROR')) {
+    if (stat) stat.textContent = '❌ Descendez le patient avant la tare.';
+    if (btn) btn.disabled = false;
+    return;
+  }
   await new Promise(r => setTimeout(r, 800));
-  if (stat) stat.textContent = '✅ Tare effectuée – vous pouvez démarrer C4';
+  if (stat) stat.textContent = '✅ Tare mousse OK. Faites monter le patient puis cliquez "Recentrer".';
+  if (centerBtn) centerBtn.disabled = false;
+}
+
+async function sotFoamDoCenter() {
+  const btn  = document.getElementById('sot-foam-center-btn');
+  const stat = document.getElementById('sot-foam-center-status');
+  const conf = document.getElementById('sot-foam-confirm-btn');
+  if (btn) btn.disabled = true;
+  if (stat) stat.textContent = 'Centrage en cours…';
+  const r = await api('/center');
+  if (typeof r === 'string' && r.includes('ERROR')) {
+    if (stat) stat.textContent = '❌ Patient non détecté. Faites monter le patient puis réessayez.';
+    if (btn) btn.disabled = false;
+    return;
+  }
+  await new Promise(r => setTimeout(r, 500));
+  if (stat) stat.textContent = '✅ Centrage mousse OK – vous pouvez démarrer C4';
   if (conf) conf.disabled = false;
 }
 
