@@ -639,6 +639,26 @@ def sot_check_ready():
             return wait_msg
     return "READY\n"
 
+@app.route("/sot/foam_tare")
+def sot_foam_tare():
+    """Retare for foam transition (between C3 and C4) with safety checks.
+    The tare must be performed with foam on the platform and patient OFF.
+    """
+    # During C3->C4 transition, current tare still corresponds to "no foam".
+    # So if patient is still on the platform, total load is clearly above this threshold.
+    load_guard = max(0.001, float(_sot_orig_total_min) * 5.0)
+    try:
+        current_total = float(_srv.latest.get("total", 0.0))
+    except Exception:
+        current_total = 0.0
+    if current_total > load_guard:
+        return (
+            f"ERROR: charge detectee ({current_total:.6f}). "
+            "Descendez le patient puis refaites la tare.\n"
+        )
+    _srv.tare()
+    return "OK TARE FOAM\n"
+
 # ---- Patient info for SOT report ----
 _sot_patient = {}   # set by /sot/patient before starting
 
@@ -1947,4 +1967,3 @@ if __name__ == "__main__":
     print("  Data     : " + DATA_DIR)
     print("=" * 62)
     _orig_main()
-
