@@ -79,12 +79,12 @@ INVERT_Y_CMD = True
 # CONDITIONS SOT
 # ==========================================================
 SOT_CONDITIONS = {
-    1: {"name": "EO STABLE", "duration": 20, "plateau": "stable", "vision": "EO", "opto": False},
-    2: {"name": "EC STABLE", "duration": 20, "plateau": "stable", "vision": "EC", "opto": False},
-    3: {"name": "EO OPTO", "duration": 35, "plateau": "stable", "vision": "EO", "opto": True, "analysis_start": 15},
-    4: {"name": "EO INSTABLE", "duration": 20, "plateau": "auto", "vision": "EO", "opto": False},
-    5: {"name": "EC INSTABLE", "duration": 20, "plateau": "auto", "vision": "EC", "opto": False},
-    6: {"name": "OPTO INSTABLE", "duration": 35, "plateau": "auto", "vision": "OPTO", "opto": True, "analysis_start": 15},
+    1: {"name": "EO STABLE",    "duration": 20, "plateau": "stable", "vision": "EO",   "opto": False},
+    2: {"name": "EC STABLE",    "duration": 20, "plateau": "stable", "vision": "EC",   "opto": False},
+    3: {"name": "EO OPTO",      "duration": 35, "plateau": "stable", "vision": "EO",   "opto": True, "analysis_start": 15},
+    4: {"name": "EO INSTABLE",  "duration": 20, "plateau": "stable", "vision": "EO",   "opto": False},
+    5: {"name": "EC INSTABLE",  "duration": 20, "plateau": "stable", "vision": "EC",   "opto": False},
+    6: {"name": "OPTO INSTABLE","duration": 35, "plateau": "stable", "vision": "OPTO", "opto": True, "analysis_start": 15},
 }
 
 # ==========================================================
@@ -469,7 +469,8 @@ def esp_send(line: str):
 
 # ==========================================================
 # LOGGING SOT
-# ==========================================================`r`ndef start_log():
+# ==========================================================
+def start_log():
     global logging_active, log_file, log_writer, current_log_path
     os.makedirs("logs", exist_ok=True)
     fname = datetime.now().strftime("logs/sot_%Y%m%d_%H%M%S.csv")
@@ -495,6 +496,11 @@ def stop_log():
 # OPTOCINETIC HDMI (Chromium lancÃ© une seule fois)
 # ==========================================================
 opto_process = None
+
+# SOT opto settings (used for conditions 3 and 6)
+_sot_opto_dir   = "down"
+_sot_opto_speed = 6
+
 hdmi_state = {
     "mode": "off",
     "direction": "right",
@@ -665,7 +671,7 @@ def start_condition(c):
         send_to_esp = False
         esp_send("AUTO:0")
     if cond["opto"]:
-        start_opto()
+        start_opto(direction=_sot_opto_dir, speed=_sot_opto_speed)
     else:
         start_black_screen()
 
@@ -867,6 +873,24 @@ def sot_restart():
     start_condition(sot_condition)
     return f"RESTART CONDITION {sot_condition}\n"
 
+@app.route("/sot/opto")
+def sot_opto_set():
+    global _sot_opto_dir, _sot_opto_speed
+    d = request.args.get("direction")
+    s = request.args.get("speed")
+    if d and d in ("up", "down", "left", "right"):
+        _sot_opto_dir = d
+    if s is not None:
+        try:
+            _sot_opto_speed = max(1, min(30, int(s)))
+        except ValueError:
+            pass
+    # If opto condition is currently running, update live
+    if sot_condition in (3, 6):
+        start_opto(direction=_sot_opto_dir, speed=_sot_opto_speed)
+    return Response(json.dumps({"direction": _sot_opto_dir, "speed": _sot_opto_speed}),
+                    mimetype="application/json")
+
 @app.route("/hdmi/mode")
 def hdmi_mode_route():
     return Response(json.dumps(hdmi_state), mimetype="application/json")
@@ -877,12 +901,13 @@ def hdmi():
 <html>
 <head><meta charset="utf-8"/><title>HDMI</title></head>
 <body style="margin:0;padding:0;overflow:hidden;background:#000;cursor:none">
-<video id="vbg" playsinline muted autoplay loop style="position:fixed;inset:0;width:100vw;height:100vh;object-fit:cover;background:#000;display:none"></video>
+<video id="vbg" playsinline muted autoplay style="position:fixed;inset:0;width:100vw;height:100vh;object-fit:cover;background:#000;display:none"></video>
 <canvas id="c" style="position:fixed;inset:0;display:block"></canvas>
 <script>
 var canvas=document.getElementById("c");
 var ctx=canvas.getContext("2d");
 var vbg=document.getElementById("vbg");
+vbg.addEventListener('ended',function(){vbg.style.display='none';active_video_src='';});
 function resize(){canvas.width=window.innerWidth;canvas.height=window.innerHeight;}
 resize();window.onresize=resize;
 var offset=0,t0=Date.now();
@@ -909,14 +934,14 @@ function drawScoreBar(){var pct=Math.max(0,Math.min(1,hold_time/Math.max(0.01,go
 function updateVideoPlayback(){
   if(mode!=="video"){vbg.style.display="none";return;}
   vbg.style.display="block";
-  var src="/static/"+(video_file||"voiture1.mp4");
+  var src="/videos/"+(video_file||"voiture1.mp4");
   if(src!==active_video_src){active_video_src=src;vbg.src=src;try{vbg.load();}catch(e){}}
   if(vbg.paused){var p=vbg.play();if(p&&p.catch)p.catch(function(){});} 
 }
 function draw(){
 if(mode==="video"){ctx.clearRect(0,0,canvas.width,canvas.height);drawHud();requestAnimationFrame(draw);return;}
 ctx.fillStyle="#000";ctx.fillRect(0,0,canvas.width,canvas.height);drawHud();
-if(mode==="opto"){ctx.fillStyle="#FFF";if(direction==="right"||direction==="left"){for(var x=-stripe*2;x<canvas.width+stripe*2;x+=stripe*2){ctx.fillRect(x+offset,0,stripe,canvas.height);}if(direction==="right")offset+=speed;if(direction==="left")offset-=speed;offset=offset%(stripe*2);}if(direction==="down"||direction==="up"){for(var y=-stripe*2;y<canvas.height+stripe*2;y+=stripe*2){ctx.fillRect(0,y+offset,canvas.width,stripe);}if(direction==="down")offset+=speed;if(direction==="up")offset-=speed;offset=offset%(stripe*2);}}
+if(mode==="opto"){requestAnimationFrame(draw);return;}/* opto rendered by CSS layer (see _buildOpto) */
 if(mode==="vor")drawVor(vor_pair);if(mode==="point")drawMovPt();
 if(mode==="quote"){ctx.fillStyle="#FFF";ctx.font="bold 54px Arial";ctx.textAlign="center";var mxW=canvas.width*0.75,lh=66;function wrapTxt(t,mw){var w=t.split(" "),ls=[],l="";for(var n=0;n<w.length;n++){var tl=l+w[n]+" ";if(ctx.measureText(tl).width>mw&&n>0){ls.push(l);l=w[n]+" ";}else{l=tl;}}ls.push(l);return ls;}var wl=wrapTxt(qt,mxW);for(var i=0;i<wl.length;i++){ctx.fillText(wl[i],canvas.width/2,qtY+i*lh);}}
 if(mode==="target"){drawTargetCore();drawScoreBar();}
@@ -926,7 +951,35 @@ if(mode==="maze"){drawMaze();}
 requestAnimationFrame(draw);
 }
 draw();
-setInterval(function(){fetch("/hdmi/mode").then(function(r){return r.json()}).then(function(d){mode=d.mode||"off";direction=d.direction||"right";speed=parseInt(d.speed||6);stripe=parseInt(d.stripe||80);vor_pair=d.vor_pair||"lr";point_mode=d.point_mode||"lr";point_speed=d.point_speed||"medium";tgx=parseFloat(d.target_x||0);tgy=parseFloat(d.target_y||0);crx=parseFloat(d.cursor_x||0);cry=parseFloat(d.cursor_y||0);tgr=parseFloat(d.target_r||0.18);hold_time=parseFloat(d.hold_time||0);goal_s=parseFloat(d.goal_s||5);show_badge=parseInt(d.show_badge||0);seq_points=d.seq_points||[];seq_index=parseInt(d.seq_index||0);path_points=d.path_points||[];path_index=parseInt(d.path_index||0);maze_points=d.maze_points||[];maze_index=parseInt(d.maze_index||0);maze_width=parseFloat(d.maze_width||0.14);maze_offtrack=parseInt(d.maze_offtrack||0);title=d.title||"";video_file=d.video_file||"voiture1.mp4";updateVideoPlayback();var nq=d.quote||"";if(nq!==lastQt){lastQt=nq;qt=nq;qtY=Math.random()*(canvas.height*0.5)+canvas.height*0.25;}}).catch(function(){});},180);
+/* ---- CSS opto layer (GPU compositor, no JS per-frame cost) ---- */
+var _optoLayer=null,_optoAnim=null,_optoKey='';
+function _buildOpto(dir,spd,sw){
+  if(_optoAnim){_optoAnim.cancel();_optoAnim=null;}
+  if(_optoLayer){_optoLayer.remove();_optoLayer=null;}
+  var isH=dir==='right'||dir==='left';
+  var num=Math.ceil((isH?window.innerWidth:window.innerHeight)/sw)*2+4;
+  var outer=document.createElement('div');
+  outer.style.cssText='position:fixed;inset:0;overflow:hidden;pointer-events:none';
+  var strip=document.createElement('div');
+  strip.style.display='flex';
+  strip.style.flexDirection=isH?'row':'column';
+  strip.style.willChange='transform';
+  if(isH){strip.style.width=(num*sw)+'px';strip.style.height='100vh';}
+  else{strip.style.height=(num*sw)+'px';strip.style.width='100vw';}
+  for(var i=0;i<num;i++){var s=document.createElement('div');s.style.flexShrink='0';s.style.background=i%2===0?'#000':'#fff';if(isH){s.style.width=sw+'px';s.style.height='100vh';}else{s.style.height=sw+'px';s.style.width='100vw';}strip.appendChild(s);}
+  outer.appendChild(strip);document.body.appendChild(outer);_optoLayer=outer;
+  var cyc=sw*2,pps=spd*60,dur=cyc/pps*1000;
+  var f=isH?(dir==='right'?'translateX(0)':'translateX(-'+cyc+'px)'):(dir==='down'?'translateY(0)':'translateY(-'+cyc+'px)');
+  var t=isH?(dir==='right'?'translateX(-'+cyc+'px)':'translateX(0)'):(dir==='down'?'translateY(-'+cyc+'px)':'translateY(0)');
+  _optoAnim=strip.animate([{transform:f},{transform:t}],{duration:dur,iterations:Infinity,easing:'linear'});
+}
+/* ---- State poll: 33 ms = 30 Hz (was 180 ms = 5.5 Hz) ---- */
+setInterval(function(){fetch("/hdmi/mode").then(function(r){return r.json()}).then(function(d){mode=d.mode||"off";direction=d.direction||"right";speed=parseInt(d.speed||6);stripe=parseInt(d.stripe||80);vor_pair=d.vor_pair||"lr";point_mode=d.point_mode||"lr";point_speed=d.point_speed||"medium";tgx=parseFloat(d.target_x||0);tgy=parseFloat(d.target_y||0);crx=parseFloat(d.cursor_x||0);cry=parseFloat(d.cursor_y||0);tgr=parseFloat(d.target_r||0.18);hold_time=parseFloat(d.hold_time||0);goal_s=parseFloat(d.goal_s||5);show_badge=parseInt(d.show_badge||0);seq_points=d.seq_points||[];seq_index=parseInt(d.seq_index||0);path_points=d.path_points||[];path_index=parseInt(d.path_index||0);maze_points=d.maze_points||[];maze_index=parseInt(d.maze_index||0);maze_width=parseFloat(d.maze_width||0.14);maze_offtrack=parseInt(d.maze_offtrack||0);title=d.title||"";video_file=d.video_file||"voiture1.mp4";updateVideoPlayback();var nq=d.quote||"";if(nq!==lastQt){lastQt=nq;qt=nq;qtY=Math.random()*(canvas.height*0.5)+canvas.height*0.25;}
+/* CSS opto layer management */
+var ok=mode+'|'+direction+'|'+speed+'|'+stripe;
+if(mode==='opto'){if(ok!==_optoKey){_buildOpto(direction,speed,stripe);_optoKey=ok;}}
+else{if(_optoKey){if(_optoAnim){_optoAnim.cancel();_optoAnim=null;}if(_optoLayer){_optoLayer.remove();_optoLayer=null;}_optoKey='';}}
+}).catch(function(){});},33);
 </script>
 </body>
 </html>"""
@@ -1052,7 +1105,13 @@ async function doCenter() {
 }
 
 async function startSOT() {
-  await fetch('/sot/start/1');
+  const r = await fetch('/sot/start/1');
+  const t = await r.text();
+  if (!t.includes('STARTED CONDITION 1')) {
+    document.getElementById('timer').textContent = 'ERREUR DEMARRAGE';
+    document.getElementById('timer').className = 'timer-idle';
+    return;
+  }
   sotActive = true;
   document.getElementById('btn_start').disabled = true;
   document.getElementById('btn_next').disabled = false;
@@ -1064,6 +1123,11 @@ async function startSOT() {
 async function nextCond() {
   const r = await fetch('/sot/next');
   const t = await r.text();
+  if (t.startsWith('WAIT:')) {
+    document.getElementById('timer').textContent = t.replace('WAIT:','').trim();
+    document.getElementById('timer').className = 'timer-running';
+    return;
+  }
   if (t.includes('FINISHED')) {
     sotActive = false;
     stopPolling();
@@ -1421,8 +1485,19 @@ def system_shutdown():
     except: pass
     def delayed_shutdown():
         time.sleep(1.0)
-        try: subprocess.Popen(["sudo", "shutdown", "-h", "now"])
-        except Exception as e: print("[SHUTDOWN ERROR]", e)
+        # Try in order: systemctl (no sudo on systemd), sudo -n (NOPASSWD sudoers), sudo
+        for cmd in (
+            ["systemctl", "poweroff"],
+            ["sudo", "-n", "shutdown", "-h", "now"],
+            ["sudo", "shutdown", "-h", "now"],
+        ):
+            try:
+                ret = subprocess.call(cmd, timeout=5)
+                if ret == 0:
+                    return
+            except Exception as e:
+                print(f"[SHUTDOWN] {cmd[0]} failed: {e}")
+        print("[SHUTDOWN ERROR] all methods failed – run setup/install_sudoers.sh")
     threading.Thread(target=delayed_shutdown, daemon=True).start()
     return "SHUTDOWN\n"
 
@@ -3323,7 +3398,7 @@ button:disabled{opacity:.45;cursor:not-allowed}
 <div class="box"><button class="green" onclick="startEx()" id="btn_start" disabled>START</button><button class="red" onclick="stopEx()">STOP</button></div>
 </div>
 <div class="status" id="st">-</div>
-<div class="box row"><button class="blue" onclick="window.location='/'">Accueil</button><button class="blue" onclick="window.location='/sot'">SOT</button><button class="red" onclick="shutdownPi()" style="font-size:13px">ETEINDRE LE RASPBERRY</button></div>
+<div class="box row"><button class="blue" onclick="window.location='/'">Accueil</button><button class="blue" onclick="window.location='/sot'">SOT</button><button class="red" onclick="shutdownPi()" style="font-size:13px">ETEINDRE LE PC</button></div>
 
 <script>
 var os=6,cx="ex1",exAll=["ex1","ex2","ex3","ex4","ex5","ex6","ex7","ex8","ex9","ex10","ex11","ex12"];
